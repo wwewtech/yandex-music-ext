@@ -28,6 +28,33 @@ async function getDownloadUrl(trackId, albumId) {
     return `https://${host}/get-mp3/${sign}/${ts}${path}`;
 }
 
+// Вспомогательная функция: получает бинарные данные через background script 
+// (в обход CORS-ограничений браузера для content-скриптов)
+async function fetchBufferViaBackground(url) {
+    return new Promise((resolve, reject) => {
+        chrome.runtime.sendMessage({ action: 'fetch_data_url', url }, async (response) => {
+            if (chrome.runtime.lastError) {
+                return reject(chrome.runtime.lastError.message);
+            }
+            if (response && response.error) {
+                return reject(new Error(response.error));
+            }
+            if (response && response.dataUrl) {
+                try {
+                    // Конвертируем data:url обратно в ArrayBuffer
+                    const res = await fetch(response.dataUrl);
+                    const buffer = await res.arrayBuffer();
+                    resolve(buffer);
+                } catch (e) {
+                    reject(e);
+                }
+            } else {
+                reject(new Error("Неизвестная ошибка: пустой ответ от background"));
+            }
+        });
+    });
+}
+
 // Универсальная функция скачивания трека с добавлением метаданных (ID3 тегов)
 async function downloadTrackWithMetadata(trackId, albumId, fallbackTitle, btnElement) {
     try {
@@ -73,16 +100,14 @@ async function downloadTrackWithMetadata(trackId, albumId, fallbackTitle, btnEle
         // 2. Получаем прямую ссылку на mp3
         const downloadUrl = await getDownloadUrl(trackId, albumId);
         
-        // 3. Скачиваем MP3 в память браузера (как ArrayBuffer)
-        const mp3Res = await fetch(downloadUrl);
-        const mp3Buffer = await mp3Res.arrayBuffer();
+        // 3. Скачиваем MP3 в память браузера (через background, чтобы обойти CORS)
+        const mp3Buffer = await fetchBufferViaBackground(downloadUrl);
         
-        // 4. Скачиваем обложку (если она есть) для добавления в трек
+        // 4. Скачиваем обложку (если она есть) тоже через background
         let coverBuffer = null;
         if (coverUrl) {
             try {
-                const coverRes = await fetch(coverUrl);
-                coverBuffer = await coverRes.arrayBuffer();
+                coverBuffer = await fetchBufferViaBackground(coverUrl);
             } catch(e) {
                 console.warn('Не удалось скачать обложку', e);
             }
