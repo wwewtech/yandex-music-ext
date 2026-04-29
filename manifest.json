@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "Yandex Music Downloader",
+  "version": "1.0",
+  "description": "Добавляет кнопку скачивания трека в плеер Яндекс Музыки",
+  "permissions": [
+    "downloads"
+  ],
+  "host_permissions":[
+    "*://*.yandex.ru/*",
+    "*://*.yandex.net/*"
+  ],
+  "content_scripts": [
+    {
+      "matches":["*://music.yandex.ru/*"],
+      "js": ["md5.js", "content.js"]
+    }
+  ],
+  "background": {
+    "service_worker": "background.js"
+  }
+}
