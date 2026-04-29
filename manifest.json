@@ -13,7 +13,7 @@
   "content_scripts": [
     {
       "matches":["*://music.yandex.ru/*"],
-      "js": ["md5.js", "content.js"]
+      "js": ["md5.js", "id3-writer.js", "content.js"]
     }
   ],
   "background": {

@@ -22,6 +22,86 @@ async function getDownloadUrl(trackId, albumId) {
     return `https://${host}/get-mp3/${sign}/${ts}${path}`;
 }
 
+// Универсальная функция скачивания трека с добавлением метаданных (ID3 тегов)
+async function downloadTrackWithMetadata(trackId, albumId, fallbackTitle, btnElement) {
+    try {
+        btnElement.style.opacity = '0.3';
+        
+        // 1. Получаем полные метаданные трека из API Яндекса
+        const metaRes = await fetch(`https://music.yandex.ru/api/v2.1/handlers/tracks?tracks=${trackId}:${albumId}`);
+        const metaData = await metaRes.json();
+        const trackInfo = metaData[0];
+        
+        let title = fallbackTitle || 'track';
+        let artists = '';
+        let album = '';
+        let year = '';
+        let coverUrl = '';
+
+        if (trackInfo) {
+            title = trackInfo.title || title;
+            if (trackInfo.artists && trackInfo.artists.length > 0) {
+                artists = trackInfo.artists.map(a => a.name).join(', ');
+            }
+            if (trackInfo.albums && trackInfo.albums.length > 0) {
+                album = trackInfo.albums[0].title || '';
+                year = trackInfo.albums[0].year || '';
+            }
+            if (trackInfo.coverUri) {
+                coverUrl = `https://${trackInfo.coverUri.replace('%%', '400x400')}`;
+            }
+        }
+        
+        const fileName = (artists ? `${artists} - ${title}` : title).replace(/[\\/:*?"<>|]/g, "_");
+
+        // 2. Получаем прямую ссылку на mp3
+        const downloadUrl = await getDownloadUrl(trackId, albumId);
+        
+        // 3. Скачиваем MP3 в память браузера (как ArrayBuffer)
+        const mp3Res = await fetch(downloadUrl);
+        const mp3Buffer = await mp3Res.arrayBuffer();
+        
+        // 4. Скачиваем обложку (если она есть) для добавления в трек
+        let coverBuffer = null;
+        if (coverUrl) {
+            try {
+                const coverRes = await fetch(coverUrl);
+                coverBuffer = await coverRes.arrayBuffer();
+            } catch(e) {
+                console.warn('Не удалось скачать обложку', e);
+            }
+        }
+        
+        // 5. Записываем ID3 теги с помощью скрипта id3-writer.js
+        const writer = new window.ID3Writer(mp3Buffer);
+        writer.addTextFrame('TIT2', title);
+        if (artists) writer.addTextFrame('TPE1', artists);
+        if (album) writer.addTextFrame('TALB', album);
+        if (year) writer.addTextFrame('TYER', year.toString());
+        if (coverBuffer) writer.addPictureFrame(coverBuffer, 'image/jpeg');
+        
+        const taggedBuffer = writer.getTaggedBuffer();
+        const blob = new Blob([taggedBuffer], { type: 'audio/mp3' });
+        const blobUrl = URL.createObjectURL(blob);
+
+        // 6. Отправляем временную ссылку (blob URL) в фоновый скрипт
+        chrome.runtime.sendMessage({ 
+            action: 'download', 
+            url: blobUrl, 
+            filename: fileName 
+        });
+        
+        // Очищаем память, удаляя временную blob ссылку через минуту
+        setTimeout(() => URL.revokeObjectURL(blobUrl), 60000);
+
+    } catch (e) {
+        console.error("Ошибка при получении и записи метаданных трека:", e);
+        alert("Не удалось скачать трек с тегами. Проверьте консоль.");
+    } finally {
+        btnElement.style.opacity = '1';
+    }
+}
+
 // Функция добавления кнопки в плеер
 function injectDownloadButton() {
     if (document.getElementById('ym-ext-download-btn')) return;
@@ -104,22 +184,9 @@ function injectDownloadButton() {
         }
 
         const trackTitle = trackLink.textContent.trim();
-        const fileName = artists ? `${artists} - ${trackTitle}` : trackTitle;
 
-        try {
-            btn.style.opacity = '0.5';
-            const downloadUrl = await getDownloadUrl(trackId, albumId);
-            chrome.runtime.sendMessage({ 
-                action: 'download', 
-                url: downloadUrl, 
-                filename: fileName 
-            });
-        } catch (e) {
-            console.error("Ошибка при получении ссылки на трек:", e);
-            alert("Не удалось скачать трек. Проверьте консоль.");
-        } finally {
-            btn.style.opacity = '1';
-        }
+        // Отправляем на скачивание (внутри функции название дополнится и обновятся теги)
+        await downloadTrackWithMetadata(trackId, albumId, trackTitle, btn);
     };
 
     if (insertMethod === 'append') {
@@ -186,30 +253,10 @@ function injectListDownloadButtons() {
             e.preventDefault();
             e.stopPropagation();
 
-            // Ищем имена артистов (они могут быть в ссылках внутри этого же трека)
-            const artistLinks = row.querySelectorAll('a[href*="/artist/"]');
-            const artists = Array.from(artistLinks).map(a => a.textContent.trim()).join(', ');
-            
             const trackTitle = trackLink.textContent.trim() || row.getAttribute('aria-label') || 'track';
-            // Если aria-label уже содержит "Артист - Название", пытаемся не дублировать
-            const fileName = artists && !trackTitle.includes(artists.split(',')[0]) 
-                ? `${artists} - ${trackTitle}` 
-                : trackTitle;
-
-            try {
-                btn.style.opacity = '0.3';
-                const downloadUrl = await getDownloadUrl(trackId, albumId);
-                chrome.runtime.sendMessage({ 
-                    action: 'download', 
-                    url: downloadUrl, 
-                    filename: fileName 
-                });
-            } catch (err) {
-                console.error("Ошибка при получении ссылки на трек:", err);
-                alert("Не удалось скачать трек.");
-            } finally {
-                btn.style.opacity = '1';
-            }
+            
+            // Вызываем общую функцию со вшитыми тегами
+            await downloadTrackWithMetadata(trackId, albumId, trackTitle, btn);
         };
 
         // Вставляем перед первым дочерним элементом в controlsBar (обычно перед лайком)
