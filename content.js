@@ -24,63 +24,96 @@ async function getDownloadUrl(trackId, albumId) {
 
 // Функция добавления кнопки в плеер
 function injectDownloadButton() {
-    // Если кнопка уже есть — выходим
     if (document.getElementById('ym-ext-download-btn')) return;
 
-    // Ищем зону панели плеера из вашего примера кода
-    const playerBar = document.querySelector('.PlayerBarDesktopWithBackgroundProgressBar_sonata__mGFb_');
-    if (!playerBar) return;
+    // Пытаемся найти панель плеера или элемент, куда можно вставить кнопку (например, рядом с кнопкой лайка)
+    let targetContainer = null;
+    let insertMethod = 'append'; // 'append' или 'after'
+    
+    // 1. Полноценная панель (старые и новые классы)
+    targetContainer = document.querySelector('.PlayerBarDesktopWithBackgroundProgressBar_sonata__mGFb_') || 
+                      document.querySelector('[class*="PlayerBar"] [class*="sonata"]');
+                      
+    if (!targetContainer) {
+        // 2. Фолбэк: ищем кнопку "Мне нравится" (Лайк) в плеере и ставим нашу кнопку рядом
+        // Плеер обычно либо внизу, либо имеет класс player
+        const likeBtn = document.querySelector('[class*="Player"] button[aria-label="Мне нравится"], [class*="Player"] button[title="Мне нравится"], [class*="player"] button[aria-label="Like"]');
+        if (likeBtn && likeBtn.parentNode) {
+            targetContainer = likeBtn;
+            insertMethod = 'after';
+        }
+    }
+    
+    if (!targetContainer) return;
 
-    // Создаем кнопку, копируя классы Яндекса (чтобы она выглядела идентично "лайку" или "дизлайку")
     const btn = document.createElement('button');
     btn.id = 'ym-ext-download-btn';
-    // Классы взяты из кнопок управления плеером
+    // Используем максимально нейтральный и общий стиль, или копируем с соседних элементов
     btn.className = 'cpeagBA1_PblpJn8Xgtv UDMYhpDjiAFT3xUx268O uwk3hfWzB2VT7kE13SQk IlG7b1K0AD7E7AMx6F5p HbaqudSqu7Q3mv3zMPGr WtFdWDF44egSVM_YiMUX qU2apWBO1yyEK0lZ3lPO';
     btn.setAttribute('aria-label', 'Скачать трек');
-    btn.style.marginLeft = '12px'; // Небольшой отступ
+    btn.setAttribute('title', 'Скачать трек');
+    btn.style.marginLeft = '12px';
+    btn.style.marginRight = '12px';
+    btn.style.cursor = 'pointer';
+    btn.style.display = 'inline-flex';
+    btn.style.alignItems = 'center';
+    btn.style.justifyContent = 'center';
+    btn.style.background = 'transparent';
+    btn.style.border = 'none';
+    btn.style.color = 'inherit';
 
-    // SVG иконка скачивания
     btn.innerHTML = `
-        <span class="JjlbHZ4FaP9EAcR_1DxF">
+        <span class="JjlbHZ4FaP9EAcR_1DxF" style="display:flex; align-items:center;">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
                 <path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/>
             </svg>
         </span>
     `;
 
-    // Логика по клику
     btn.onclick = async () => {
-        // Ищем ссылку на текущий трек в панели плеера
-        const trackLink = document.querySelector('.PlayerBarDesktopWithBackgroundProgressBar_description__5jHke a[href*="/track/"]');
-        const artistLinks = document.querySelectorAll('.PlayerBarDesktopWithBackgroundProgressBar_description__5jHke .Meta_artists__VnR52 a');
+        // Ищем ссылку на трек. Поскольку классы меняются, мы просматриваем все ссылки внутри блока плеера, 
+        // содержащие одновременно /album/ и /track/
+        // Ограничиваем поиск родительским контейнером всего плеера (например, header, footer или div с [class*="Player"])
+        const playerArea = document.querySelector('[class*="PlayerBar"]') || document.querySelector('[class*="player"]') || document.body;
         
-        if (!trackLink) return;
+        // Получаем все ссылки на треки в области плеера
+        const trackLinks = Array.from(playerArea.querySelectorAll('a[href*="/album/"][href*="/track/"]'));
+        
+        // Первая ссылка обычно и есть название трека
+        const trackLink = trackLinks.find(a => {
+            const match = a.getAttribute('href').match(/\/album\/(\d+)\/track\/(\d+)/);
+            // Исключаем ссылки на комментарии и т.д.
+            return match && match[1] && match[2] && a.textContent.trim().length > 0;
+        });
+        
+        if (!trackLink) {
+            alert("Не удалось определить играющий трек. Возможно, не открыт плеер или изменился дизайн Я.Музыки.");
+            return;
+        }
 
-        // Вытаскиваем albumId и trackId из href (пример: /album/41667153/track/150447734)
         const match = trackLink.getAttribute('href').match(/\/album\/(\d+)\/track\/(\d+)/);
-        if (!match) return;
-
         const albumId = match[1];
         const trackId = match[2];
         
-        // Формируем красивое название файла (Артист 1, Артист 2 - Название трека)
+        // Ищем ссылки на артистов. Они обычно рядом с названием трека в том же родительском блоке, и содержат /artist/
+        const trackContainer = trackLink.closest('[class*="description"]') || trackLink.closest('[class*="track-info"]') || trackLink.parentNode.parentNode;
+        let artists = '';
+        if (trackContainer) {
+            const artistLinks = trackContainer.querySelectorAll('a[href*="/artist/"]');
+            artists = Array.from(artistLinks).map(a => a.textContent.trim()).join(', ');
+        }
+
         const trackTitle = trackLink.textContent.trim();
-        const artists = Array.from(artistLinks).map(a => a.textContent.trim()).join(', ');
         const fileName = artists ? `${artists} - ${trackTitle}` : trackTitle;
 
         try {
-            // Анимация нажатия (полупрозрачность)
             btn.style.opacity = '0.5';
-            
             const downloadUrl = await getDownloadUrl(trackId, albumId);
-            
-            // Отправляем ссылку в фоновый скрипт для начала скачивания
             chrome.runtime.sendMessage({ 
                 action: 'download', 
                 url: downloadUrl, 
                 filename: fileName 
             });
-            
         } catch (e) {
             console.error("Ошибка при получении ссылки на трек:", e);
             alert("Не удалось скачать трек. Проверьте консоль.");
@@ -89,8 +122,11 @@ function injectDownloadButton() {
         }
     };
 
-    // Вставляем кнопку в конец блока с кнопками
-    playerBar.appendChild(btn);
+    if (insertMethod === 'append') {
+        targetContainer.appendChild(btn);
+    } else if (insertMethod === 'after' && targetContainer.parentNode) {
+        targetContainer.parentNode.insertBefore(btn, targetContainer.nextSibling);
+    }
 }
 
 // Яндекс Музыка работает как SPA (Single Page Application), элементы подгружаются динамически.
