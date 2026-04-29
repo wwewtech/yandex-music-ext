@@ -7,12 +7,18 @@ async function getDownloadUrl(trackId, albumId) {
     const res1 = await fetch(trackApiUrl, {
         headers: { 'X-Retpath-Y': encodeURIComponent(location.href) }
     });
-    const data1 = await res1.json();
+    const text1 = await res1.text();
+    if (!text1) throw new Error("Пустой ответ от сервера при получении ссылки на трек");
+    const data1 = JSON.parse(text1);
+    
+    if (!data1.src) throw new Error("Сервер не вернул прямую ссылку (src)");
 
     // 2. Получаем параметры сервера хранения (добавляем format=json, чтобы не парсить XML как в Python)
     const srcUrl = data1.src + '&format=json';
     const res2 = await fetch(srcUrl);
-    const data2 = await res2.json();
+    const text2 = await res2.text();
+    if (!text2) throw new Error("Пустой ответ от стораджа Яндекс Музыки");
+    const data2 = JSON.parse(text2);
 
     // 3. Формируем MD5 подпись (sign)
     const { host, path, ts, s } = data2;
@@ -28,9 +34,19 @@ async function downloadTrackWithMetadata(trackId, albumId, fallbackTitle, btnEle
         btnElement.style.opacity = '0.3';
         
         // 1. Получаем полные метаданные трека из API Яндекса
-        const metaRes = await fetch(`https://music.yandex.ru/api/v2.1/handlers/tracks?tracks=${trackId}:${albumId}`);
-        const metaData = await metaRes.json();
-        const trackInfo = metaData[0];
+        let trackInfo = null;
+        try {
+            const metaRes = await fetch(`https://music.yandex.ru/api/v2.1/handlers/tracks?tracks=${trackId}:${albumId}`, {
+                headers: { 'X-Retpath-Y': encodeURIComponent(location.href) }
+            });
+            const metaText = await metaRes.text();
+            if (metaText) {
+                const metaData = JSON.parse(metaText);
+                trackInfo = metaData[0];
+            }
+        } catch (e) {
+            console.warn("Не удалось загрузить расширенные метаданные, используем базовые", e);
+        }
         
         let title = fallbackTitle || 'track';
         let artists = '';
