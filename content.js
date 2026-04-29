@@ -129,10 +129,103 @@ function injectDownloadButton() {
     }
 }
 
+// Функция добавления кнопок в списки треков (в альбомах, плейлистах и т.д.)
+function injectListDownloadButtons() {
+    // Ищем все строки с треками (обычно это элементы с классом, содержащим 'CommonTrack_root' или 'TrackPlaylist_track')
+    const trackRows = document.querySelectorAll('[class*="CommonTrack_root"], [class*="TrackPlaylist_track"], [class*="d-track "], .d-track');
+
+    trackRows.forEach(row => {
+        // Проверяем, добавили ли мы уже кнопку в этот трек
+        if (row.querySelector('.ym-ext-list-download-btn')) return;
+
+        // Находим контейнер с контролами (где лайк и время)
+        const controlsBar = row.querySelector('[class*="CommonControlsBar_controls"], [class*="TrackPlaylist_controlsBarCell"], .d-track__actions');
+        if (!controlsBar) return;
+
+        // Пытаемся найти ссылку на трек внутри этой строки
+        const trackLink = row.querySelector('a[href*="/album/"][href*="/track/"]');
+        if (!trackLink) return;
+
+        const match = trackLink.getAttribute('href').match(/\/album\/(\d+)\/track\/(\d+)/);
+        if (!match) return;
+
+        const albumId = match[1];
+        const trackId = match[2];
+
+        // Создаем маленькую кнопку скачивания
+        const btn = document.createElement('button');
+        btn.className = 'ym-ext-list-download-btn cpeagBA1_PblpJn8Xgtv UDMYhpDjiAFT3xUx268O zIMibMuH7wcqUoW7KH1B IlG7b1K0AD7E7AMx6F5p HbaqudSqu7Q3mv3zMPGr j1jXIVckFgZECecFzZMe qU2apWBO1yyEK0lZ3lPO CommonControlsBar_item__qGErG';
+        btn.setAttribute('aria-label', 'Скачать трек');
+        btn.setAttribute('title', 'Скачать трек');
+        
+        // Нейтральные стили, с подстройкой под контекст списков
+        btn.style.cursor = 'pointer';
+        btn.style.display = 'inline-flex';
+        btn.style.alignItems = 'center';
+        btn.style.justifyContent = 'center';
+        btn.style.background = 'transparent';
+        btn.style.border = 'none';
+        btn.style.color = 'inherit';
+        btn.style.padding = '0 8px';
+        btn.style.opacity = '0.7';
+
+        // Иконка
+        btn.innerHTML = `
+            <span class="JjlbHZ4FaP9EAcR_1DxF">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+                    <path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/>
+                </svg>
+            </span>
+        `;
+
+        // Немного магии со стилями по наведению
+        btn.onmouseover = () => btn.style.opacity = '1';
+        btn.onmouseout = () => btn.style.opacity = '0.7';
+
+        btn.onclick = async (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+
+            // Ищем имена артистов (они могут быть в ссылках внутри этого же трека)
+            const artistLinks = row.querySelectorAll('a[href*="/artist/"]');
+            const artists = Array.from(artistLinks).map(a => a.textContent.trim()).join(', ');
+            
+            const trackTitle = trackLink.textContent.trim() || row.getAttribute('aria-label') || 'track';
+            // Если aria-label уже содержит "Артист - Название", пытаемся не дублировать
+            const fileName = artists && !trackTitle.includes(artists.split(',')[0]) 
+                ? `${artists} - ${trackTitle}` 
+                : trackTitle;
+
+            try {
+                btn.style.opacity = '0.3';
+                const downloadUrl = await getDownloadUrl(trackId, albumId);
+                chrome.runtime.sendMessage({ 
+                    action: 'download', 
+                    url: downloadUrl, 
+                    filename: fileName 
+                });
+            } catch (err) {
+                console.error("Ошибка при получении ссылки на трек:", err);
+                alert("Не удалось скачать трек.");
+            } finally {
+                btn.style.opacity = '1';
+            }
+        };
+
+        // Вставляем перед первым дочерним элементом в controlsBar (обычно перед лайком)
+        if (controlsBar.firstChild) {
+            controlsBar.insertBefore(btn, controlsBar.firstChild);
+        } else {
+            controlsBar.appendChild(btn);
+        }
+    });
+}
+
 // Яндекс Музыка работает как SPA (Single Page Application), элементы подгружаются динамически.
 // Используем MutationObserver чтобы следить за появлением/изменением плеера.
 const observer = new MutationObserver(() => {
     injectDownloadButton();
+    injectListDownloadButtons();
 });
 
 observer.observe(document.body, { childList: true, subtree: true });
