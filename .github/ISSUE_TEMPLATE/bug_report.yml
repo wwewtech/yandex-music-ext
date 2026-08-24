@@ -1,0 +1,57 @@
+name: 🐛 Сообщить об ошибке (Bug Report)
+description: Создать отчет о проблеме или ошибке в работе расширения
+title: "[Bug]: "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Спасибо, что помогаете улучшать проект! Пожалуйста, заполните форму ниже.
+  - type: textarea
+    id: description
+    attributes:
+      label: Описание проблемы
+      description: Кратко и четко опишите, что произошло.
+      placeholder: Например, кнопка скачивания не появляется на странице нового альбома.
+    validations:
+      required: true
+  - type: dropdown
+    id: browser
+    attributes:
+      label: Браузер
+      description: В каком браузере возникла проблема?
+      options:
+        - Google Chrome
+        - Яндекс Браузер
+        - Microsoft Edge
+        - Brave
+        - Opera
+        - Vivaldi
+        - Другой Chromium-браузер
+    validations:
+      required: true
+  - type: input
+    id: browser_version
+    attributes:
+      label: Версия браузера и операционная система
+      placeholder: Chrome 128.0 / Windows 11
+    validations:
+      required: false
+  - type: textarea
+    id: steps
+    attributes:
+      label: Шаги для воспроизведения
+      description: Пошаговый сценарий воспроизведения проблемы.
+      placeholder: |
+        1. Открыть страницу трека или альбома https://music.yandex.ru/...
+        2. Запустить трек
+        3. Нажать кнопку скачивания
+        4. Наблюдать ошибку...
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Логи консоли разработчика (F12 -> Console)
+      description: Скопируйте и вставьте ошибки из консоли разработчика.
+      render: shell

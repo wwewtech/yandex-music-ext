@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 💬 Вопросы и обсуждения
+    url: https://github.com/wwewtech/yandex-music-ext/discussions
+    about: Задать общий вопрос или обсудить функциональность

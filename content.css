@@ -1,0 +1,361 @@
+/* ==========================================================================
+   YANDEX MUSIC EXTENSION — INJECTED FLUENT UI & MICRO-INTERACTIONS
+   ========================================================================== */
+
+/* Player Bar Download Button */
+#ym-ext-download-btn {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  width: 36px !important;
+  height: 36px !important;
+  border-radius: 50% !important;
+  background: transparent !important;
+  border: none !important;
+  color: inherit !important;
+  cursor: pointer !important;
+  margin: 0 6px !important;
+  padding: 0 !important;
+  position: relative !important;
+  transition: transform 120ms cubic-bezier(0.16, 1, 0.3, 1), 
+              background-color 150ms ease,
+              color 150ms ease !important;
+  outline: none !important;
+}
+
+#ym-ext-download-btn:hover {
+  background: rgba(255, 255, 255, 0.1) !important;
+  color: #ffcc00 !important;
+}
+
+#ym-ext-download-btn:active {
+  transform: scale(0.88) !important;
+}
+
+#ym-ext-download-btn.ym-loading svg {
+  animation: ym-spin 1s linear infinite;
+  color: #ffcc00 !important;
+}
+
+#ym-ext-download-btn.ym-success {
+  color: #10b981 !important;
+}
+
+#ym-ext-download-btn.ym-error {
+  color: #ef4444 !important;
+  animation: ym-shake 0.3s ease-in-out;
+}
+
+/* Tracklist Inline Download Button */
+.ym-ext-list-download-btn {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  width: 32px !important;
+  height: 32px !important;
+  border-radius: 50% !important;
+  background: transparent !important;
+  border: none !important;
+  color: inherit !important;
+  opacity: 0.65 !important;
+  cursor: pointer !important;
+  margin: 0 4px !important;
+  padding: 0 !important;
+  transition: all 150ms cubic-bezier(0.16, 1, 0.3, 1) !important;
+  outline: none !important;
+}
+
+.ym-ext-list-download-btn:hover {
+  opacity: 1 !important;
+  background: rgba(255, 255, 255, 0.12) !important;
+  color: #ffcc00 !important;
+  transform: scale(1.05) !important;
+}
+
+.ym-ext-list-download-btn:active {
+  transform: scale(0.9) !important;
+}
+
+.ym-ext-list-download-btn.ym-loading svg {
+  animation: ym-spin 1s linear infinite;
+  color: #ffcc00 !important;
+  opacity: 1 !important;
+}
+
+.ym-ext-list-download-btn.ym-success {
+  opacity: 1 !important;
+  color: #10b981 !important;
+}
+
+/* Batch Header Download Button */
+.ym-ext-batch-header-btn {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 8px !important;
+  height: 40px !important;
+  padding: 0 18px !important;
+  border-radius: 20px !important;
+  background: rgba(255, 255, 255, 0.08) !important;
+  border: 1px solid rgba(255, 255, 255, 0.15) !important;
+  color: #ffffff !important;
+  font-family: inherit !important;
+  font-size: 14px !important;
+  font-weight: 600 !important;
+  cursor: pointer !important;
+  margin-left: 12px !important;
+  backdrop-filter: blur(12px) !important;
+  transition: all 150ms cubic-bezier(0.16, 1, 0.3, 1) !important;
+  outline: none !important;
+}
+
+.ym-ext-batch-header-btn:hover {
+  background: rgba(255, 204, 0, 0.15) !important;
+  border-color: #ffcc00 !important;
+  color: #ffcc00 !important;
+  transform: translateY(-1px) !important;
+}
+
+.ym-ext-batch-header-btn:active {
+  transform: scale(0.97) !important;
+}
+
+/* Windows 11 Fluent InfoBar / In-Page Toast */
+#ym-ext-toast-container {
+  position: fixed !important;
+  bottom: 96px !important;
+  right: 24px !important;
+  z-index: 999999 !important;
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 10px !important;
+  pointer-events: none !important;
+  font-family: "Segoe UI Variable Text", "Segoe UI", -apple-system, BlinkMacSystemFont, "Inter", Roboto, sans-serif !important;
+}
+
+.ym-ext-toast {
+  pointer-events: auto !important;
+  width: 340px !important;
+  background: rgba(22, 23, 30, 0.94) !important;
+  border: 1px solid rgba(255, 255, 255, 0.12) !important;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.45) !important;
+  backdrop-filter: blur(20px) saturate(160%) !important;
+  border-radius: 10px !important;
+  padding: 12px 14px !important;
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 8px !important;
+  color: #ffffff !important;
+  animation: ym-slide-in 240ms cubic-bezier(0.16, 1, 0.3, 1) forwards !important;
+  transition: opacity 200ms ease, transform 200ms ease !important;
+}
+
+.ym-ext-toast.ym-closing {
+  opacity: 0 !important;
+  transform: translateX(30px) scale(0.95) !important;
+}
+
+.ym-toast-row {
+  display: flex !important;
+  align-items: center !important;
+  gap: 10px !important;
+}
+
+.ym-toast-cover {
+  width: 38px !important;
+  height: 38px !important;
+  border-radius: 6px !important;
+  object-fit: cover !important;
+  flex-shrink: 0 !important;
+  border: 1px solid rgba(255, 255, 255, 0.1) !important;
+}
+
+.ym-toast-info {
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 2px !important;
+  min-width: 0 !important;
+  flex: 1 !important;
+}
+
+.ym-toast-title {
+  font-size: 13px !important;
+  font-weight: 600 !important;
+  color: #ffffff !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+}
+
+.ym-toast-artist {
+  font-size: 11px !important;
+  color: #a1a1aa !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+}
+
+.ym-toast-status {
+  font-size: 11px !important;
+  font-family: "Cascadia Code", Consolas, monospace !important;
+  display: flex !important;
+  align-items: center !important;
+  gap: 6px !important;
+}
+
+.ym-toast-status.ym-status-loading {
+  color: #ffcc00 !important;
+}
+
+.ym-toast-status.ym-status-success {
+  color: #10b981 !important;
+}
+
+.ym-toast-status.ym-status-error {
+  color: #ef4444 !important;
+}
+
+.ym-toast-progress-bar {
+  width: 100% !important;
+  height: 3px !important;
+  background: rgba(255, 255, 255, 0.08) !important;
+  border-radius: 2px !important;
+  overflow: hidden !important;
+}
+
+.ym-toast-progress-fill {
+  height: 100% !important;
+  background: #ffcc00 !important;
+  width: 30% !important;
+  border-radius: 2px !important;
+  transition: width 300ms ease !important;
+}
+
+.ym-toast-progress-fill.ym-done {
+  background: #10b981 !important;
+  width: 100% !important;
+}
+
+/* Batch Modal Drawer */
+#ym-ext-batch-modal {
+  position: fixed !important;
+  top: 0 !important;
+  left: 0 !important;
+  width: 100vw !important;
+  height: 100vh !important;
+  background: rgba(0, 0, 0, 0.6) !important;
+  backdrop-filter: blur(8px) !important;
+  z-index: 9999999 !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  font-family: "Segoe UI Variable Text", "Segoe UI", -apple-system, BlinkMacSystemFont, "Inter", Roboto, sans-serif !important;
+}
+
+.ym-batch-box {
+  width: 440px !important;
+  background: #181922 !important;
+  border: 1px solid rgba(255, 255, 255, 0.12) !important;
+  border-radius: 12px !important;
+  padding: 20px !important;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.6) !important;
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 16px !important;
+  color: #ffffff !important;
+}
+
+.ym-batch-header {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+}
+
+.ym-batch-title {
+  font-size: 16px !important;
+  font-weight: 700 !important;
+}
+
+.ym-batch-close {
+  background: transparent !important;
+  border: none !important;
+  color: #a1a1aa !important;
+  font-size: 18px !important;
+  cursor: pointer !important;
+}
+
+.ym-batch-close:hover {
+  color: #ffffff !important;
+}
+
+.ym-batch-progress {
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 6px !important;
+}
+
+.ym-batch-progress-text {
+  font-size: 12px !important;
+  color: #a1a1aa !important;
+  display: flex !important;
+  justify-content: space-between !important;
+}
+
+.ym-batch-bar {
+  width: 100% !important;
+  height: 6px !important;
+  background: rgba(255, 255, 255, 0.08) !important;
+  border-radius: 3px !important;
+  overflow: hidden !important;
+}
+
+.ym-batch-bar-fill {
+  height: 100% !important;
+  background: #ffcc00 !important;
+  width: 0% !important;
+  transition: width 200ms ease !important;
+}
+
+.ym-batch-footer {
+  display: flex !important;
+  justify-content: flex-end !important;
+  gap: 10px !important;
+}
+
+.ym-batch-btn {
+  padding: 8px 16px !important;
+  border-radius: 6px !important;
+  font-size: 13px !important;
+  font-weight: 600 !important;
+  cursor: pointer !important;
+  border: 1px solid transparent !important;
+  outline: none !important;
+}
+
+.ym-batch-btn-cancel {
+  background: #242632 !important;
+  color: #ffffff !important;
+  border-color: rgba(255, 255, 255, 0.08) !important;
+}
+
+.ym-batch-btn-start {
+  background: #ffcc00 !important;
+  color: #0e0f14 !important;
+}
+
+/* Animations */
+@keyframes ym-spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+@keyframes ym-slide-in {
+  0% { opacity: 0; transform: translateY(16px) scale(0.96); }
+  100% { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes ym-shake {
+  0%, 100% { transform: translateX(0); }
+  25% { transform: translateX(-4px); }
+  75% { transform: translateX(4px); }
+}

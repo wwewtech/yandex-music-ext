@@ -1,18 +1,46 @@
+/**
+ * Yandex Music Downloader — Background Service Worker (Manifest V3)
+ * Handles CORS proxying, downloads management, and lifecycle events.
+ */
+
+chrome.runtime.onInstalled.addListener((details) => {
+    if (details.reason === 'install') {
+        // Initialize default storage settings
+        chrome.storage.local.set({
+            embedTags: true,
+            toasts: true,
+            filenamePattern: 'artist-title',
+            saveAs: false
+        });
+        console.log('[YMD] Initialized default extension preferences');
+    }
+});
+
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === 'download') {
-        // Очищаем имя файла от запрещенных символов
-        const safeFilename = request.filename.replace(/[\\/:*?"<>|]/g, "_");
-        
+        const safeFilename = request.filename ? request.filename.replace(/[\\/:*?"<>|]/g, "_").trim() : 'track';
+        const saveAs = Boolean(request.saveAs);
+
         chrome.downloads.download({
             url: request.url,
             filename: `${safeFilename}.mp3`,
-            saveAs: false // Поставьте true, если хотите чтобы браузер спрашивал куда сохранить
+            saveAs: saveAs
+        }, (downloadId) => {
+            if (chrome.runtime.lastError) {
+                console.error('[YMD] Download error:', chrome.runtime.lastError.message);
+                sendResponse({ error: chrome.runtime.lastError.message });
+            } else {
+                sendResponse({ downloadId });
+            }
         });
-    } else if (request.action === 'fetch_data_url') {
-        // Выполняем fetch в background, чтобы обойти CORS ограничения content-скрипта
+        return true;
+    } 
+    
+    if (request.action === 'fetch_data_url') {
+        // Proxy binary data via background worker to bypass CORS in content scripts
         fetch(request.url)
             .then(res => {
-                if (!res.ok) throw new Error(`HTTP error! limit: ${res.status}`);
+                if (!res.ok) throw new Error(`HTTP error ${res.status}: ${res.statusText}`);
                 return res.blob();
             })
             .then(blob => {
@@ -21,7 +49,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                     sendResponse({ dataUrl: reader.result });
                 };
                 reader.onerror = () => {
-                    sendResponse({ error: 'Failed to read blob' });
+                    sendResponse({ error: 'Failed to convert blob to dataUrl' });
                 };
                 reader.readAsDataURL(blob);
             })
@@ -29,7 +57,6 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 sendResponse({ error: err.message || err.toString() });
             });
         
-        // Возвращаем true, т.к. sendResponse будет вызван асинхронно
-        return true;
+        return true; // Async response
     }
 });

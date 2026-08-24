@@ -1,10 +1,12 @@
 {
   "manifest_version": 3,
   "name": "Yandex Music Downloader",
-  "version": "1.0.0",
-  "description": "Скачивание треков с Яндекс Музыки в MP3 с автоматическим сохранением обложек и ID3-тегов.",
+  "version": "1.1.0",
+  "description": "Скачивание треков с Яндекс Музыки в MP3 (320 kbps) с автоматическим сохранением обложек и ID3-тегов.",
   "permissions": [
-    "downloads"
+    "downloads",
+    "storage",
+    "activeTab"
   ],
   "host_permissions": [
     "*://*.yandex.ru/*",
@@ -17,6 +19,7 @@
     "128": "icons/icon128.png"
   },
   "action": {
+    "default_popup": "popup.html",
     "default_icon": {
       "16": "icons/icon16.png",
       "32": "icons/icon32.png",
@@ -30,14 +33,29 @@
       "matches": [
         "*://music.yandex.ru/*"
       ],
+      "css": [
+        "content.css"
+      ],
       "js": [
         "md5.js",
         "id3-writer.js",
         "content.js"
-      ]
+      ],
+      "run_at": "document_end"
     }
   ],
   "background": {
     "service_worker": "background.js"
-  }
+  },
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "icons/*",
+        "content.css"
+      ],
+      "matches": [
+        "*://music.yandex.ru/*"
+      ]
+    }
+  ]
 }

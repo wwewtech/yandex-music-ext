@@ -1,0 +1,33 @@
+name: Release Extension Package
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build & Attach Release Package
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Package Extension ZIP
+        run: |
+          mkdir -p dist
+          VERSION=${GITHUB_REF_NAME#v}
+          ZIP_NAME="yandex-music-downloader-v${VERSION}.zip"
+          zip -r "dist/${ZIP_NAME}" manifest.json background.js content.js content.css popup.html popup.css popup.js id3-writer.js md5.js icons LICENSE README.md
+          echo "ZIP_NAME=${ZIP_NAME}" >> $GITHUB_ENV
+          echo "✓ Created package dist/${ZIP_NAME}"
+
+      - name: Upload Package to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/${{ env.ZIP_NAME }}
+          generate_release_notes: true

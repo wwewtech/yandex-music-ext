@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#191a24" />
+      <stop offset="100%" stop-color="#0e0f15" />
+    </linearGradient>
+    <linearGradient id="goldGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#ffe066" />
+      <stop offset="100%" stop-color="#ff9f00" />
+    </linearGradient>
+  </defs>
+  
+  <!-- Base Squircle -->
+  <rect x="7" y="7" width="114" height="114" rx="26" fill="url(#bgGrad)" stroke="#323648" stroke-width="2" />
+  
+  <!-- Sound Wave Bars -->
+  <rect x="20" y="52" width="5" height="24" rx="2.5" fill="#ff7700" opacity="0.8" />
+  <rect x="31" y="40" width="5" height="48" rx="2.5" fill="#ffaa00" opacity="0.9" />
+  <rect x="42" y="28" width="5" height="72" rx="2.5" fill="#ffcc00" />
+  
+  <rect x="81" y="28" width="5" height="72" rx="2.5" fill="#ffcc00" />
+  <rect x="92" y="40" width="5" height="48" rx="2.5" fill="#ffaa00" opacity="0.9" />
+  <rect x="103" y="52" width="5" height="24" rx="2.5" fill="#ff7700" opacity="0.8" />
+  
+  <!-- Center Plate -->
+  <circle cx="64" cy="64" r="35" fill="#181a23" stroke="#3b4055" stroke-width="1.5" />
+  
+  <!-- Arrow -->
+  <rect x="58" y="40" width="12" height="28" rx="6" fill="url(#goldGrad)" />
+  <path d="M64 85 L42 63 L86 63 Z" fill="url(#goldGrad)" />
+  <rect x="42" y="89" width="44" height="6" rx="3" fill="#ffe066" />
+</svg>

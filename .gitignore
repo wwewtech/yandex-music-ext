@@ -1,5 +1,9 @@
 # Temporary and test HTML dumps
-*.html
+all.html
+block.html
+group.html
+*.dump.html
+*.tmp
 
 # OS files
 .DS_Store
