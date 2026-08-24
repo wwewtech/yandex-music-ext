@@ -6,11 +6,14 @@
   "permissions": [
     "downloads",
     "storage",
-    "activeTab"
+    "activeTab",
+    "webRequest"
   ],
   "host_permissions": [
     "*://*.yandex.ru/*",
-    "*://*.yandex.net/*"
+    "*://*.yandex.net/*",
+    "*://*.strm.yandex.net/*",
+    "*://api.music.yandex.ru/*"
   ],
   "icons": {
     "16": "icons/icon16.png",

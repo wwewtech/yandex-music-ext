@@ -133,76 +133,30 @@ function escapeHtml(str) {
    ========================================================================== */
 
 async function getDownloadUrl(trackId, albumId) {
-    // Yandex Music download API — try multiple context strings as the API evolves
-    const contexts = [
-        // Album page contexts
-        'web-album_track-track-track-main',
-        'web-album-track-track-main',
-        'web-album_track-track-main',
-        // Playlist contexts
-        'web-playlist_track-track-track-main',
-        'web-playlist-track-track-main',
-        // Artist page contexts
-        'web-artist_track-track-track-main',
-        'web-artist-track-track-main',
-        // Radio / stream contexts
-        'web-radio_track-track-track-main',
-        'web-radio-track-track-main',
-        // Own library / collection
-        'web-own_tracks-track-track-main',
-        'web-collection-track-track-main',
-        'web-collection_track-track-track-main',
-        // Feed / recommendations
-        'web-feed-track-track-main',
-        'web-new-track-track-main',
-        // Search and chart
-        'web-search-track-track-main',
-        'web-chart-track-track-main',
-        // Generic fallbacks
-        'web-track-track-main',
-        'web-undefined_source-track-track-main',
-        'web',
-    ];
+    // Strategy: Yandex's old download API (music.yandex.ru/api/v2.1/handlers/track/.../download/m)
+    // is dead as of 2025. The new API (api.music.yandex.ru/get-file-info) requires a server-signed
+    // HMAC token we cannot compute. Instead, background.js intercepts the browser's OWN
+    // get-file-info XHR (fired when the user plays a track) and caches the signed stream URL.
+    // We retrieve it here. If the track hasn't been played yet, we ask the user to hit play first.
 
-    const baseHeaders = {
-        'Accept': 'application/json, text/javascript, */*; q=0.01',
-        'X-Requested-With': 'XMLHttpRequest',
-        'X-Retpath-Y': encodeURIComponent(location.href),
-        'Referer': `https://music.yandex.ru/album/${albumId}`,
-    };
+    // 1. Check background cache
+    const cached = await getCachedStreamUrl(trackId);
+    if (cached) return cached;
 
-    let data1 = null;
-    let lastError = '';
+    // 2. If not cached: trigger playback of the track so Yandex fires get-file-info
+    //    by clicking the track row or waiting up to 5s after showing a hint toast
+    throw new Error(
+        'Нажмите ▶ Play на треке — расширение перехватит ссылку автоматически и скачает'
+    );
+}
 
-    for (const ctx of contexts) {
-        const url = `https://music.yandex.ru/api/v2.1/handlers/track/${trackId}:${albumId}/${ctx}/download/m?hq=1`;
-        try {
-            const res = await fetch(url, { credentials: 'include', headers: baseHeaders });
-            if (!res.ok) { lastError = `HTTP ${res.status} (${ctx})`; continue; }
-            const text = await res.text();
-            if (!text || text.trim().startsWith('<')) { lastError = `HTML ответ (${ctx})`; continue; }
-            const parsed = JSON.parse(text);
-            if (parsed && parsed.src) { data1 = parsed; break; }
-            lastError = `Нет поля src (${ctx})`;
-        } catch (e) {
-            lastError = e.message;
-        }
-    }
-
-    if (!data1) throw new Error(`Не удалось получить ссылку на поток. Последняя ошибка: ${lastError}`);
-
-    const srcUrl = data1.src + '&format=json';
-    const res2 = await fetch(srcUrl, { credentials: 'include' });
-    if (!res2.ok) throw new Error(`Ошибка стораджа Яндекс Музыки: ${res2.status}`);
-
-    const text2 = await res2.text();
-    if (!text2 || text2.trim().startsWith('<')) throw new Error('Сторадж вернул HTML вместо JSON');
-    const data2 = JSON.parse(text2);
-
-    const { host, path, ts, s } = data2;
-    const sign = md5(SALT + path.substring(1) + s);
-
-    return `https://${host}/get-mp3/${sign}/${ts}${path}`;
+async function getCachedStreamUrl(trackId) {
+    return new Promise((resolve) => {
+        chrome.runtime.sendMessage({ action: 'get_cached_stream', trackId: String(trackId) }, (res) => {
+            if (chrome.runtime.lastError) { resolve(null); return; }
+            resolve(res && res.url ? res.url : null);
+        });
+    });
 }
 
 async function fetchBufferViaBackground(url) {
@@ -252,26 +206,21 @@ async function downloadTrackWithMetadata(trackId, albumId, fallbackTitle, btnEle
             btnElement.disabled = true;
         }
 
-        // 1. Get track metadata
+        // 1. Get track metadata from api.music.yandex.ru (this endpoint still works)
         let trackInfo = null;
         try {
-            const metaRes = await fetch(`https://music.yandex.ru/api/v2.1/handlers/tracks?tracks=${trackId}:${albumId}&external-domain=music.yandex.ru&overembed=no`, {
+            const metaRes = await fetch(`https://api.music.yandex.ru/tracks?trackIds=${trackId}`, {
                 credentials: 'include',
-                headers: {
-                    'Accept': 'application/json, text/javascript, */*; q=0.01',
-                    'X-Requested-With': 'XMLHttpRequest',
-                    'X-Retpath-Y': encodeURIComponent(location.href),
-                    'Referer': `https://music.yandex.ru/album/${albumId}`,
-                    'X-Yandex-Music-Client': 'YandexMusicAPI/5.0'
-                }
+                headers: { 'Accept': 'application/json' }
             });
-            const metaText = await metaRes.text();
-            if (metaText && !metaText.trim().startsWith('<')) {
-                const metaData = JSON.parse(metaText);
-                trackInfo = metaData[0];
+            if (metaRes.ok) {
+                const metaData = await metaRes.json();
+                // Response: { result: [ {...track} ] }
+                const items = metaData?.result || metaData;
+                trackInfo = Array.isArray(items) ? items[0] : items;
             }
         } catch (e) {
-            console.warn("Фолбэк базовых метаданных", e);
+            console.warn('Metadata fetch failed:', e);
         }
 
         let title = fallbackTitle || 'Трек';
@@ -301,13 +250,27 @@ async function downloadTrackWithMetadata(trackId, albumId, fallbackTitle, btnEle
             title,
             artist: artists,
             coverUrl,
-            statusText: "Подключение к аудиопотоку...",
-            progress: 25,
+            statusText: 'Ожидание воспроизведения трека...',
+            progress: 15,
             state: 'loading'
         });
 
-        // 2. Direct download URL
-        const downloadUrl = await getDownloadUrl(trackId, albumId);
+        // 2. Get stream URL from background cache (populated when user plays the track)
+        let downloadUrl = await getDownloadUrl(trackId, albumId).catch(() => null);
+
+        if (!downloadUrl) {
+            // Cache miss — wait up to 8s polling for the browser to fire get-file-info
+            if (toastHandle) toastHandle.update({ newStatus: 'Нажмите ▶ Play — перехватываю ссылку...', newProgress: 30 });
+            for (let i = 0; i < 8; i++) {
+                await new Promise(r => setTimeout(r, 1000));
+                downloadUrl = await getCachedStreamUrl(trackId);
+                if (downloadUrl) break;
+            }
+        }
+
+        if (!downloadUrl) {
+            throw new Error('Сначала нажмите ▶ Play на треке, затем кнопку скачивания');
+        }
 
         // Toast: Streaming MP3
         if (toastHandle) {
