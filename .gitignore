@@ -1,1 +1,22 @@
+# Temporary and test HTML dumps
 *.html
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE & Editors
+.idea/
+.vscode/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Build & Archives
+*.zip
+*.crx
+dist/
+build/

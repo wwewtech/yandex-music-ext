@@ -1,19 +1,40 @@
 {
   "manifest_version": 3,
   "name": "Yandex Music Downloader",
-  "version": "1.0",
-  "description": "Добавляет кнопку скачивания трека в плеер Яндекс Музыки",
+  "version": "1.0.0",
+  "description": "Скачивание треков с Яндекс Музыки в MP3 с автоматическим сохранением обложек и ID3-тегов.",
   "permissions": [
     "downloads"
   ],
-  "host_permissions":[
+  "host_permissions": [
     "*://*.yandex.ru/*",
     "*://*.yandex.net/*"
   ],
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "action": {
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    },
+    "default_title": "Yandex Music Downloader"
+  },
   "content_scripts": [
     {
-      "matches":["*://music.yandex.ru/*"],
-      "js": ["md5.js", "id3-writer.js", "content.js"]
+      "matches": [
+        "*://music.yandex.ru/*"
+      ],
+      "js": [
+        "md5.js",
+        "id3-writer.js",
+        "content.js"
+      ]
     }
   ],
   "background": {
