@@ -135,10 +135,33 @@ function escapeHtml(str) {
 async function getDownloadUrl(trackId, albumId) {
     // Yandex Music download API — try multiple context strings as the API evolves
     const contexts = [
+        // Album page contexts
         'web-album_track-track-track-main',
         'web-album-track-track-main',
+        'web-album_track-track-main',
+        // Playlist contexts
+        'web-playlist_track-track-track-main',
+        'web-playlist-track-track-main',
+        // Artist page contexts
+        'web-artist_track-track-track-main',
+        'web-artist-track-track-main',
+        // Radio / stream contexts
         'web-radio_track-track-track-main',
+        'web-radio-track-track-main',
+        // Own library / collection
         'web-own_tracks-track-track-main',
+        'web-collection-track-track-main',
+        'web-collection_track-track-track-main',
+        // Feed / recommendations
+        'web-feed-track-track-main',
+        'web-new-track-track-main',
+        // Search and chart
+        'web-search-track-track-main',
+        'web-chart-track-track-main',
+        // Generic fallbacks
+        'web-track-track-main',
+        'web-undefined_source-track-track-main',
+        'web',
     ];
 
     const baseHeaders = {
