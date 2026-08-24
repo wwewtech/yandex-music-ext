@@ -133,26 +133,43 @@ function escapeHtml(str) {
    ========================================================================== */
 
 async function getDownloadUrl(trackId, albumId) {
-    const trackApiUrl = `https://music.yandex.ru/api/v2.1/handlers/track/${trackId}:${albumId}/web-album_track-track-track-main/download/m?hq=1`;
+    const retpath = encodeURIComponent(`https://music.yandex.ru/album/${albumId}/track/${trackId}`);
+    const ts = Date.now();
+    const trackApiUrl = `https://music.yandex.ru/api/v2.1/handlers/track/${trackId}:${albumId}/web-album_track-track-track-main/download/m?hq=1&external-domain=music.yandex.ru&overembed=no&__t=${ts}`;
+
     const res1 = await fetch(trackApiUrl, {
-        headers: { 'X-Retpath-Y': encodeURIComponent(location.href) }
+        credentials: 'include',
+        headers: {
+            'Accept': 'application/json, text/javascript, */*; q=0.01',
+            'X-Requested-With': 'XMLHttpRequest',
+            'X-Retpath-Y': retpath,
+            'Referer': `https://music.yandex.ru/album/${albumId}`,
+            'X-Yandex-Music-Client': 'YandexMusicAPI/5.0'
+        }
     });
+
+    if (!res1.ok) throw new Error(`Сервер вернул ${res1.status} при получении ссылки на поток`);
+
     const text1 = await res1.text();
-    if (!text1) throw new Error("Пустой ответ от сервера Яндекс Музыки");
+    if (!text1 || text1.trim().startsWith('<')) {
+        throw new Error('Сервер вернул HTML вместо JSON. Убедитесь, что вы авторизованы на music.yandex.ru');
+    }
     const data1 = JSON.parse(text1);
-    
-    if (!data1.src) throw new Error("Сервер не вернул ссылку на поток (src)");
+
+    if (!data1.src) throw new Error('Сервер не вернул ссылку на поток (src)');
 
     const srcUrl = data1.src + '&format=json';
-    const res2 = await fetch(srcUrl);
+    const res2 = await fetch(srcUrl, { credentials: 'include' });
+    if (!res2.ok) throw new Error(`Ошибка стораджа Яндекс Музыки: ${res2.status}`);
+
     const text2 = await res2.text();
-    if (!text2) throw new Error("Пустой ответ от стораджа Яндекс Музыки");
+    if (!text2 || text2.trim().startsWith('<')) throw new Error('Сторадж вернул HTML вместо JSON');
     const data2 = JSON.parse(text2);
 
-    const { host, path, ts, s } = data2;
+    const { host, path, ts: fileTs, s } = data2;
     const sign = md5(SALT + path.substring(1) + s);
 
-    return `https://${host}/get-mp3/${sign}/${ts}${path}`;
+    return `https://${host}/get-mp3/${sign}/${fileTs}${path}`;
 }
 
 async function fetchBufferViaBackground(url) {
@@ -205,11 +222,18 @@ async function downloadTrackWithMetadata(trackId, albumId, fallbackTitle, btnEle
         // 1. Get track metadata
         let trackInfo = null;
         try {
-            const metaRes = await fetch(`https://music.yandex.ru/api/v2.1/handlers/tracks?tracks=${trackId}:${albumId}`, {
-                headers: { 'X-Retpath-Y': encodeURIComponent(location.href) }
+            const metaRes = await fetch(`https://music.yandex.ru/api/v2.1/handlers/tracks?tracks=${trackId}:${albumId}&external-domain=music.yandex.ru&overembed=no`, {
+                credentials: 'include',
+                headers: {
+                    'Accept': 'application/json, text/javascript, */*; q=0.01',
+                    'X-Requested-With': 'XMLHttpRequest',
+                    'X-Retpath-Y': encodeURIComponent(location.href),
+                    'Referer': `https://music.yandex.ru/album/${albumId}`,
+                    'X-Yandex-Music-Client': 'YandexMusicAPI/5.0'
+                }
             });
             const metaText = await metaRes.text();
-            if (metaText) {
+            if (metaText && !metaText.trim().startsWith('<')) {
                 const metaData = JSON.parse(metaText);
                 trackInfo = metaData[0];
             }
