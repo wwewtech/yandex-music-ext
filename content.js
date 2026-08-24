@@ -133,30 +133,40 @@ function escapeHtml(str) {
    ========================================================================== */
 
 async function getDownloadUrl(trackId, albumId) {
-    const retpath = encodeURIComponent(`https://music.yandex.ru/album/${albumId}/track/${trackId}`);
-    const ts = Date.now();
-    const trackApiUrl = `https://music.yandex.ru/api/v2.1/handlers/track/${trackId}:${albumId}/web-album_track-track-track-main/download/m?hq=1&external-domain=music.yandex.ru&overembed=no&__t=${ts}`;
+    // Yandex Music download API — try multiple context strings as the API evolves
+    const contexts = [
+        'web-album_track-track-track-main',
+        'web-album-track-track-main',
+        'web-radio_track-track-track-main',
+        'web-own_tracks-track-track-main',
+    ];
 
-    const res1 = await fetch(trackApiUrl, {
-        credentials: 'include',
-        headers: {
-            'Accept': 'application/json, text/javascript, */*; q=0.01',
-            'X-Requested-With': 'XMLHttpRequest',
-            'X-Retpath-Y': retpath,
-            'Referer': `https://music.yandex.ru/album/${albumId}`,
-            'X-Yandex-Music-Client': 'YandexMusicAPI/5.0'
+    const baseHeaders = {
+        'Accept': 'application/json, text/javascript, */*; q=0.01',
+        'X-Requested-With': 'XMLHttpRequest',
+        'X-Retpath-Y': encodeURIComponent(location.href),
+        'Referer': `https://music.yandex.ru/album/${albumId}`,
+    };
+
+    let data1 = null;
+    let lastError = '';
+
+    for (const ctx of contexts) {
+        const url = `https://music.yandex.ru/api/v2.1/handlers/track/${trackId}:${albumId}/${ctx}/download/m?hq=1`;
+        try {
+            const res = await fetch(url, { credentials: 'include', headers: baseHeaders });
+            if (!res.ok) { lastError = `HTTP ${res.status} (${ctx})`; continue; }
+            const text = await res.text();
+            if (!text || text.trim().startsWith('<')) { lastError = `HTML ответ (${ctx})`; continue; }
+            const parsed = JSON.parse(text);
+            if (parsed && parsed.src) { data1 = parsed; break; }
+            lastError = `Нет поля src (${ctx})`;
+        } catch (e) {
+            lastError = e.message;
         }
-    });
-
-    if (!res1.ok) throw new Error(`Сервер вернул ${res1.status} при получении ссылки на поток`);
-
-    const text1 = await res1.text();
-    if (!text1 || text1.trim().startsWith('<')) {
-        throw new Error('Сервер вернул HTML вместо JSON. Убедитесь, что вы авторизованы на music.yandex.ru');
     }
-    const data1 = JSON.parse(text1);
 
-    if (!data1.src) throw new Error('Сервер не вернул ссылку на поток (src)');
+    if (!data1) throw new Error(`Не удалось получить ссылку на поток. Последняя ошибка: ${lastError}`);
 
     const srcUrl = data1.src + '&format=json';
     const res2 = await fetch(srcUrl, { credentials: 'include' });
@@ -166,10 +176,10 @@ async function getDownloadUrl(trackId, albumId) {
     if (!text2 || text2.trim().startsWith('<')) throw new Error('Сторадж вернул HTML вместо JSON');
     const data2 = JSON.parse(text2);
 
-    const { host, path, ts: fileTs, s } = data2;
+    const { host, path, ts, s } = data2;
     const sign = md5(SALT + path.substring(1) + s);
 
-    return `https://${host}/get-mp3/${sign}/${fileTs}${path}`;
+    return `https://${host}/get-mp3/${sign}/${ts}${path}`;
 }
 
 async function fetchBufferViaBackground(url) {
