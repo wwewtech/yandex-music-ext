@@ -5,6 +5,24 @@
 
 const SALT = 'XGRlBW9FXlekgbPrRHuSiA';
 
+const fileInfoCache = {};
+
+document.addEventListener('ym-ext-file-info', (event) => {
+    const detail = event && event.detail;
+    if (!detail || !detail.trackId || !detail.info) return;
+    fileInfoCache[String(detail.trackId)] = {
+        info: detail.info,
+        ts: Date.now()
+    };
+});
+
+function getCachedFileInfo(trackId) {
+    const entry = fileInfoCache[String(trackId)];
+    if (!entry) return null;
+    if (Date.now() - entry.ts > 5 * 60 * 1000) return null;
+    return entry.info;
+}
+
 // Dynamic Settings Cache
 let appSettings = {
     embedTags: true,
@@ -67,7 +85,7 @@ function showToast({ title, artist, coverUrl, statusText, progress = 30, state =
     const toast = document.createElement('div');
     toast.className = 'ym-ext-toast';
 
-    const fallbackCover = chrome.runtime.getURL('icons/icon48.png');
+    const fallbackCover = getExtensionAssetUrl('icons/icon48.png');
     const safeCover = coverUrl || fallbackCover;
 
     toast.innerHTML = `
@@ -123,6 +141,18 @@ function showToast({ title, artist, coverUrl, statusText, progress = 30, state =
     return { toast, update };
 }
 
+function getExtensionAssetUrl(path) {
+    try {
+        return chrome.runtime.getURL(path);
+    } catch (e) {
+        if (isExtensionContextInvalidated(e)) {
+            // Data URI fallback keeps toast rendering even with stale content-script context.
+            return 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==';
+        }
+        return path;
+    }
+}
+
 function escapeHtml(str) {
     if (!str) return '';
     return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -132,54 +162,211 @@ function escapeHtml(str) {
    Direct Stream & Metadata Resolution Pipeline
    ========================================================================== */
 
-async function getDownloadUrl(trackId, albumId) {
-    // Strategy: Yandex's old download API (music.yandex.ru/api/v2.1/handlers/track/.../download/m)
-    // is dead as of 2025. The new API (api.music.yandex.ru/get-file-info) requires a server-signed
-    // HMAC token we cannot compute. Instead, background.js intercepts the browser's OWN
-    // get-file-info XHR (fired when the user plays a track) and caches the signed stream URL.
-    // We retrieve it here. If the track hasn't been played yet, we ask the user to hit play first.
-
-    // 1. Check background cache
-    const cached = await getCachedStreamUrl(trackId);
-    if (cached) return cached;
-
-    // 2. If not cached: trigger playback of the track so Yandex fires get-file-info
-    //    by clicking the track row or waiting up to 5s after showing a hint toast
-    throw new Error(
-        'Нажмите ▶ Play на треке — расширение перехватит ссылку автоматически и скачает'
-    );
+function sendBackgroundMessage(payload) {
+    return new Promise((resolve, reject) => {
+        try {
+            chrome.runtime.sendMessage(payload, (response) => {
+                const err = chrome.runtime.lastError;
+                if (err) {
+                    if (isExtensionContextInvalidated(err)) {
+                        reject(new Error('Перезагрузите страницу (Ctrl+F5) после обновления расширения'));
+                        return;
+                    }
+                    reject(new Error(err.message));
+                    return;
+                }
+                if (response && response.error) {
+                    reject(new Error(response.error));
+                    return;
+                }
+                resolve(response || {});
+            });
+        } catch (e) {
+            reject(e);
+        }
+    });
 }
 
-async function getCachedStreamUrl(trackId) {
-    return new Promise((resolve) => {
-        chrome.runtime.sendMessage({ action: 'get_cached_stream', trackId: String(trackId) }, (res) => {
-            if (chrome.runtime.lastError) { resolve(null); return; }
-            resolve(res && res.url ? res.url : null);
+async function resolveTrackDownload(trackId, albumId, options = {}) {
+    const tid = String(trackId);
+
+    const cached = getCachedFileInfo(tid);
+    if (cached && cached.url) {
+        return cached;
+    }
+
+    if (options.forceWarmup) {
+        await autoWarmupTrack(trackId, albumId);
+        const warmed = getCachedFileInfo(tid);
+        if (warmed && warmed.url) return warmed;
+    }
+
+    const signedUrl = findSignedGetFileInfoUrl(tid);
+
+    try {
+        const { info } = await sendBackgroundMessage({
+            action: 'resolve_track_download',
+            trackId: String(trackId),
+            signedUrl
         });
-    });
+        if (info && info.url) return info;
+    } catch (e) {
+        if (!options.allowRetry) throw e;
+    }
+
+    if (!options.forceWarmup) {
+        await autoWarmupTrack(trackId, albumId);
+        return resolveTrackDownload(trackId, albumId, { forceWarmup: false, allowRetry: false });
+    }
+
+    throw new Error('Не удалось получить ссылку на трек. Проверьте авторизацию на music.yandex.ru');
+}
+
+async function autoWarmupTrack(trackId, albumId) {
+    const tid = String(trackId);
+    const aid = albumId ? String(albumId) : null;
+
+    const beforeUrl = findSignedGetFileInfoUrl(tid);
+    if (beforeUrl) return true;
+
+    let toggledPlayback = false;
+    try {
+        const linkSelector = aid
+            ? `a[href*="/album/${aid}/track/${tid}"]`
+            : `a[href*="/track/${tid}"]`;
+        const trackLink = document.querySelector(linkSelector);
+        const row = trackLink ? trackLink.closest('[class*="CommonTrack_root"], [class*="TrackPlaylist_track"], .d-track') : null;
+        const rowPlayBtn = row ? row.querySelector('button[aria-label*="Слушать"], button[aria-label*="Play"], button[title*="Слушать"], button[title*="Play"]') : null;
+
+        if (rowPlayBtn) {
+            rowPlayBtn.click();
+            toggledPlayback = true;
+        } else {
+            const globalPlayBtn = document.querySelector('button[aria-label*="Пауза"], button[aria-label*="Play"], button[aria-label*="Воспроизвести"]');
+            if (globalPlayBtn) {
+                globalPlayBtn.click();
+                toggledPlayback = true;
+            }
+        }
+
+        for (let i = 0; i < 5; i++) {
+            await new Promise((r) => setTimeout(r, 600));
+            const signedUrl = findSignedGetFileInfoUrl(tid);
+            if (signedUrl) return true;
+        }
+    } catch (_) {
+        return false;
+    } finally {
+        if (toggledPlayback) {
+            try {
+                const pauseBtn = document.querySelector('button[aria-label*="Пауза"], button[title*="Пауза"]');
+                if (pauseBtn) pauseBtn.click();
+            } catch (_) {}
+        }
+    }
+
+    return false;
+}
+
+async function getAudioDurationSeconds(arrayBuffer) {
+    try {
+        const AudioCtx = window.AudioContext || window.webkitAudioContext;
+        if (!AudioCtx) return null;
+        const ctx = new AudioCtx();
+        const decoded = await ctx.decodeAudioData(arrayBuffer.slice(0));
+        const duration = decoded && Number.isFinite(decoded.duration) ? decoded.duration : null;
+        await ctx.close();
+        return duration;
+    } catch (_) {
+        return null;
+    }
+}
+
+function isLikelyPreviewByDuration(actualSec, expectedMs) {
+    const expectedSec = Number(expectedMs || 0) / 1000;
+    if (!actualSec || !expectedSec || expectedSec < 75) return false;
+
+    // Typical clipped previews are around 30 seconds.
+    if (actualSec <= 35 && expectedSec >= 90) return true;
+    return actualSec < expectedSec * 0.6;
+}
+
+function findSignedGetFileInfoUrl(trackId) {
+    const tid = String(trackId);
+    const entries = performance.getEntriesByType('resource');
+    for (let i = entries.length - 1; i >= 0; i--) {
+        const url = entries[i] && entries[i].name;
+        if (!url || !url.includes('api.music.yandex.ru/get-file-info')) continue;
+        try {
+            const parsed = new URL(url);
+            const qTrackId = parsed.searchParams.get('trackId');
+            const qTrackIds = parsed.searchParams.get('trackIds');
+            if (qTrackId === tid) return url;
+            if (qTrackIds && qTrackIds.split(',').map(v => v.trim()).includes(tid)) return url;
+        } catch (_) {}
+    }
+    return null;
+}
+
+function base64ToArrayBuffer(base64) {
+    const binary = atob(base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) {
+        bytes[i] = binary.charCodeAt(i);
+    }
+    return bytes.buffer;
+}
+
+function isExtensionContextInvalidated(error) {
+    const message = String(error?.message || error || '').toLowerCase();
+    return message.includes('extension context invalidated');
 }
 
 async function fetchBufferViaBackground(url) {
     return new Promise((resolve, reject) => {
-        chrome.runtime.sendMessage({ action: 'fetch_data_url', url }, async (response) => {
-            if (chrome.runtime.lastError) {
-                return reject(chrome.runtime.lastError.message);
-            }
-            if (response && response.error) {
-                return reject(new Error(response.error));
-            }
-            if (response && response.dataUrl) {
-                try {
-                    const res = await fetch(response.dataUrl);
-                    const buffer = await res.arrayBuffer();
-                    resolve(buffer);
-                } catch (e) {
-                    reject(e);
+        try {
+            chrome.runtime.sendMessage({ action: 'fetch_data_url', url }, async (response) => {
+                if (chrome.runtime.lastError) {
+                    if (isExtensionContextInvalidated(chrome.runtime.lastError)) {
+                        try {
+                            const directRes = await fetch(url, { credentials: 'include' });
+                            if (!directRes.ok) throw new Error(`HTTP ${directRes.status}: ${directRes.statusText}`);
+                            resolve(await directRes.arrayBuffer());
+                        } catch (directErr) {
+                            reject(directErr);
+                        }
+                        return;
+                    }
+                    return reject(chrome.runtime.lastError.message);
                 }
-            } else {
-                reject(new Error("Пустой ответ от фонового сервиса"));
+                if (response && response.error) {
+                    return reject(new Error(response.error));
+                }
+                if (response && response.dataUrl) {
+                    try {
+                        const res = await fetch(response.dataUrl);
+                        const buffer = await res.arrayBuffer();
+                        resolve(buffer);
+                    } catch (e) {
+                        reject(e);
+                    }
+                } else {
+                    reject(new Error("Пустой ответ от фонового сервиса"));
+                }
+            });
+        } catch (e) {
+            if (isExtensionContextInvalidated(e)) {
+                fetch(url, { credentials: 'include' })
+                    .then((res) => {
+                        if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+                        return res.arrayBuffer();
+                    })
+                    .then(resolve)
+                    .catch(reject);
+                return;
             }
-        });
+            reject(e);
+        }
     });
 }
 
@@ -250,87 +437,120 @@ async function downloadTrackWithMetadata(trackId, albumId, fallbackTitle, btnEle
             title,
             artist: artists,
             coverUrl,
-            statusText: 'Ожидание воспроизведения трека...',
+            statusText: 'Получение ссылки на трек...',
             progress: 15,
             state: 'loading'
         });
 
-        // 2. Get stream URL from background cache (populated when user plays the track)
-        let downloadUrl = await getDownloadUrl(trackId, albumId).catch(() => null);
-
-        if (!downloadUrl) {
-            // Cache miss — wait up to 8s polling for the browser to fire get-file-info
-            if (toastHandle) toastHandle.update({ newStatus: 'Нажмите ▶ Play — перехватываю ссылку...', newProgress: 30 });
-            for (let i = 0; i < 8; i++) {
-                await new Promise(r => setTimeout(r, 1000));
-                downloadUrl = await getCachedStreamUrl(trackId);
-                if (downloadUrl) break;
-            }
+        if (toastHandle) {
+            toastHandle.update({ newStatus: 'Запрос ссылки через API Яндекса...', newProgress: 30 });
         }
 
-        if (!downloadUrl) {
-            throw new Error('Сначала нажмите ▶ Play на треке, затем кнопку скачивания');
-        }
+        const downloadInfo = await resolveTrackDownload(trackId, albumId, { allowRetry: true });
 
-        // Toast: Streaming MP3
+        const qualityLabel = downloadInfo.codec
+            ? String(downloadInfo.codec).toUpperCase()
+            : (downloadInfo.key ? 'AAC 192' : 'MP3');
+
         if (toastHandle) {
             toastHandle.update({
-                newStatus: "Загрузка 320 kbps MP3...",
+                newStatus: `Загрузка (${qualityLabel})...`,
                 newProgress: 55,
                 newState: 'loading'
             });
         }
 
-        // 3. Fetch MP3 Buffer
-        const mp3Buffer = await fetchBufferViaBackground(downloadUrl);
+        const durationMs = trackInfo && trackInfo.durationMs ? trackInfo.durationMs : 0;
+        const canTagMp3 = appSettings.embedTags &&
+            !downloadInfo.key &&
+            (String(downloadInfo.codec).toLowerCase().includes('mp3') || downloadInfo.url.includes('/get-mp3/'));
 
-        let finalBuffer = mp3Buffer;
+        let savedFilename = fileName;
 
-        // 4. Tagging with ID3v2 if enabled
-        if (appSettings.embedTags) {
-            if (toastHandle) {
-                toastHandle.update({
-                    newStatus: "Вшивание ID3v2 тегов и обложки...",
-                    newProgress: 80,
-                    newState: 'loading'
-                });
+        if (canTagMp3) {
+            const fetched = await sendBackgroundMessage({
+                action: 'fetch_track_bytes',
+                url: downloadInfo.url,
+                key: downloadInfo.key,
+                expectedSize: downloadInfo.size,
+                codec: downloadInfo.codec
+            });
+
+            let audioBuffer = base64ToArrayBuffer(fetched.bytes);
+            let decodedSec = await getAudioDurationSeconds(audioBuffer);
+
+            if (isLikelyPreviewByDuration(decodedSec, durationMs)) {
+                throw new Error('Получен только превью-фрагмент (~30с). Попробуйте нажать Play и скачать снова.');
             }
 
-            let coverBuffer = null;
-            if (coverUrl) {
+            if (appSettings.embedTags && fetched.container === 'mp3') {
+                if (toastHandle) {
+                    toastHandle.update({
+                        newStatus: 'Вшивание ID3v2 тегов и обложки...',
+                        newProgress: 80,
+                        newState: 'loading'
+                    });
+                }
+
+                let coverBuffer = null;
+                if (coverUrl) {
+                    try {
+                        coverBuffer = await fetchBufferViaBackground(coverUrl);
+                    } catch (e) {
+                        console.warn('Не удалось скачать обложку', e);
+                    }
+                }
+
                 try {
-                    coverBuffer = await fetchBufferViaBackground(coverUrl);
-                } catch(e) {
-                    console.warn('Не удалось скачать обложку', e);
+                    const writer = new window.ID3Writer(audioBuffer);
+                    writer.addTextFrame('TIT2', title);
+                    if (artists) writer.addTextFrame('TPE1', artists);
+                    if (album) writer.addTextFrame('TALB', album);
+                    if (year) writer.addTextFrame('TYER', year.toString());
+                    if (coverBuffer) writer.addPictureFrame(coverBuffer, 'image/jpeg');
+                    audioBuffer = writer.getTaggedBuffer();
+                } catch (err) {
+                    console.warn('ID3Writer error:', err);
                 }
             }
 
+            const ext = fetched.ext || 'mp3';
+            savedFilename = `${fileName}.${ext}`;
+            const blob = new Blob([audioBuffer], { type: ext === 'mp3' ? 'audio/mpeg' : 'application/octet-stream' });
+            const blobUrl = URL.createObjectURL(blob);
+
             try {
-                const writer = new window.ID3Writer(mp3Buffer);
-                writer.addTextFrame('TIT2', title);
-                if (artists) writer.addTextFrame('TPE1', artists);
-                if (album) writer.addTextFrame('TALB', album);
-                if (year) writer.addTextFrame('TYER', year.toString());
-                if (coverBuffer) writer.addPictureFrame(coverBuffer, 'image/jpeg');
-
-                finalBuffer = writer.getTaggedBuffer();
+                await sendBackgroundMessage({
+                    action: 'download',
+                    url: blobUrl,
+                    filename: fileName,
+                    saveAs: appSettings.saveAs
+                });
             } catch (err) {
-                console.warn("Ошибка генератора ID3Writer, сохраняем исходный буфер:", err);
+                const a = document.createElement('a');
+                a.href = blobUrl;
+                a.download = savedFilename;
+                a.style.display = 'none';
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
             }
+
+            setTimeout(() => URL.revokeObjectURL(blobUrl), 60000);
+        } else {
+            const result = await sendBackgroundMessage({
+                action: 'download_track_audio',
+                url: downloadInfo.url,
+                key: downloadInfo.key,
+                expectedSize: downloadInfo.size,
+                codec: downloadInfo.codec,
+                filename: fileName,
+                saveAs: appSettings.saveAs
+            });
+
+            if (result.error) throw new Error(result.error);
+            savedFilename = result.filename || fileName;
         }
-
-        // 5. Send blob to Chrome Downloads API
-        const blob = new Blob([finalBuffer], { type: 'audio/mp3' });
-        const blobUrl = URL.createObjectURL(blob);
-
-        chrome.runtime.sendMessage({ 
-            action: 'download', 
-            url: blobUrl, 
-            filename: fileName,
-            saveAs: appSettings.saveAs
-        });
-
-        setTimeout(() => URL.revokeObjectURL(blobUrl), 60000);
 
         // Toast: Success
         if (toastHandle) {

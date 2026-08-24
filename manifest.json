@@ -6,14 +6,14 @@
   "permissions": [
     "downloads",
     "storage",
-    "activeTab",
-    "webRequest"
+    "activeTab"
   ],
   "host_permissions": [
     "*://*.yandex.ru/*",
     "*://*.yandex.net/*",
     "*://*.strm.yandex.net/*",
-    "*://api.music.yandex.ru/*"
+    "*://api.music.yandex.ru/*",
+    "*://api.music.yandex.net/*"
   ],
   "icons": {
     "16": "icons/icon16.png",
@@ -32,6 +32,16 @@
     "default_title": "Yandex Music Downloader"
   },
   "content_scripts": [
+    {
+      "matches": [
+        "*://music.yandex.ru/*"
+      ],
+      "js": [
+        "inject.js"
+      ],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
     {
       "matches": [
         "*://music.yandex.ru/*"
