@@ -23,5 +23,15 @@ desktop.ini
 *.zip
 *.crx
 dist/
-build/.chrome-test-profile/
+build/
+
+# Browser test profiles (thousands of generated files)
+.chrome-test-profile/
 .edge-test-profile/
+.chromium-test-profile/
+
+# Logs & temp output
+*.log
+t1.txt
+t2.txt
+*.out.txt
