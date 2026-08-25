@@ -335,13 +335,13 @@ async function autoWarmupTrack(trackId, albumId, force = false) {
             : `a[href*="/track/${tid}"]`;
         const trackLink = document.querySelector(linkSelector);
         const row = trackLink ? trackLink.closest('[class*="CommonTrack_root"], [class*="TrackPlaylist_track"], .d-track') : null;
-        const rowPlayBtn = row ? row.querySelector('button[aria-label*="Слушать"], button[aria-label*="Play"], button[title*="Слушать"], button[title*="Play"]') : null;
+        const rowPlayBtn = row ? row.querySelector('button[aria-label*="Слушать"], button[aria-label*="Воспроизведение"], button[aria-label*="Play"], button[title*="Слушать"], button[title*="Play"]') : null;
 
         if (rowPlayBtn) {
             rowPlayBtn.click();
             toggledPlayback = true;
         } else {
-            const globalPlayBtn = document.querySelector('button[aria-label*="Пауза"], button[aria-label*="Play"], button[aria-label*="Воспроизвести"]');
+            const globalPlayBtn = document.querySelector('button[aria-label*="Пауза"], button[aria-label*="Воспроизведение"], button[aria-label*="Play"], button[title*="Воспроизведение"]');
             if (globalPlayBtn) {
                 globalPlayBtn.click();
                 toggledPlayback = true;
@@ -358,7 +358,7 @@ async function autoWarmupTrack(trackId, albumId, force = false) {
     } finally {
         if (toggledPlayback) {
             try {
-                const pauseBtn = document.querySelector('button[aria-label*="Пауза"], button[title*="Пауза"]');
+                const pauseBtn = document.querySelector('button[aria-label*="Пауза"], button[aria-label*="Пауз"], button[title*="Пауза"]');
                 if (pauseBtn) pauseBtn.click();
             } catch (_) {}
         }
