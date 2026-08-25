@@ -23,4 +23,5 @@ desktop.ini
 *.zip
 *.crx
 dist/
-build/
+build/.chrome-test-profile/
+.edge-test-profile/
