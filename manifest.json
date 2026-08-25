@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Yandex Music Downloader",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Скачивание треков с Яндекс Музыки в MP3 (320 kbps) с автоматическим сохранением обложек и ID3-тегов.",
   "permissions": [
     "downloads",

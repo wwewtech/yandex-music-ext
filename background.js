@@ -94,10 +94,31 @@ function extForContainer(container, codec) {
     return 'mp3';
 }
 
-async function fetchJson(url, useCredentials = true) {
+async function getToken(request) {
+    if (request && request.token) return String(request.token);
+    return new Promise((resolve) => {
+        try {
+            chrome.storage.local.get(['ymToken'], (items) => {
+                resolve((items && items.ymToken) || '');
+            });
+        } catch (_) {
+            resolve('');
+        }
+    });
+}
+
+function authedHeaders(token) {
+    // X-Yandex-Music-Client имитирует мобильное приложение — открывает полные
+    // треки и высокие битрейты в /download-info (источник: yandex-music-downloader).
+    const h = { ...API_HEADERS };
+    if (token) h['Authorization'] = 'OAuth ' + token;
+    return h;
+}
+
+async function fetchJson(url, useCredentials = true, extraHeaders = null) {
     const res = await fetch(url, {
         credentials: useCredentials ? 'include' : 'omit',
-        headers: API_HEADERS
+        headers: extraHeaders ? { ...API_HEADERS, ...extraHeaders } : API_HEADERS
     });
     const text = await res.text();
     if (!res.ok) {
@@ -110,10 +131,10 @@ async function fetchJson(url, useCredentials = true) {
     }
 }
 
-async function fetchText(url, useCredentials = true) {
+async function fetchText(url, useCredentials = true, extraHeaders = null) {
     const res = await fetch(url, {
         credentials: useCredentials ? 'include' : 'omit',
-        headers: { ...API_HEADERS, 'Accept': '*/*' }
+        headers: { ...API_HEADERS, ...(extraHeaders || {}), 'Accept': '*/*' }
     });
     const text = await res.text();
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -182,8 +203,8 @@ function pickBestStream(items, preferMp3 = true) {
     return items.sort((a, b) => (b.bitrateInKbps || b.bitrate || 0) - (a.bitrateInKbps || a.bitrate || 0))[0];
 }
 
-async function resolveViaGetFileInfo(trackId, quality) {
-    const variants = ['web', 'web-alt', 'marshal'];
+async function resolveViaGetFileInfo(trackId, quality, token) {
+    const variants = ['web', 'marshal'];
     let lastError = null;
 
     for (const variant of variants) {
@@ -195,7 +216,7 @@ async function resolveViaGetFileInfo(trackId, quality) {
                 `&codecs=${encodeURIComponent(V2_CODECS)}` +
                 `&transports=encraw&sign=${encodeURIComponent(sign)}`;
 
-            const payload = await fetchJson(url, true);
+            const payload = await fetchJson(url, true, token ? { 'Authorization': 'OAuth ' + token } : null);
             const info = parseDownloadInfo(payload);
             if (info) return info;
 
@@ -209,7 +230,13 @@ async function resolveViaGetFileInfo(trackId, quality) {
     throw lastError || new Error('get-file-info failed');
 }
 
-async function resolveViaDownloadInfo(trackId) {
+/**
+ * V1: авторизованный /tracks/{id}/download-info — отдаёт ПОЛНЫЙ трек (не preview)
+ * в виде чистого MP3 без шифрования. Требует OAuth-токен.
+ * Без токена этот эндпоинт возвращает только 30-секундные превью — поэтому
+ * вызывать его без токена запрещено.
+ */
+async function resolveViaDownloadInfoAuthed(trackId, token) {
     const endpoints = [
         `https://api.music.yandex.net/tracks/${encodeURIComponent(trackId)}/download-info`,
         `https://api.music.yandex.ru/tracks/${encodeURIComponent(trackId)}/download-info`
@@ -217,13 +244,20 @@ async function resolveViaDownloadInfo(trackId) {
 
     for (const endpoint of endpoints) {
         try {
-            const payload = await fetchJson(endpoint, true);
+            const payload = await fetchJson(endpoint, false, authedHeaders(token));
             const items = Array.isArray(payload) ? payload : (payload.result || []);
-            const pick = pickBestStream(items, true);
+
+            // Защита от превью: если всё, что вернул API — preview, качать нельзя.
+            const fullItems = items.filter((i) => i && i.preview !== true);
+            if (fullItems.length === 0 && items.length > 0) {
+                throw new Error('Трек доступен только как 30-секундное превью. Нужна подписка Плюс или повторный вход на music.yandex.ru');
+            }
+
+            const pick = pickBestStream(fullItems.length ? fullItems : items, true);
             if (!pick?.downloadInfoUrl) continue;
 
             const sep = pick.downloadInfoUrl.includes('?') ? '&' : '?';
-            const infoText = await fetchText(pick.downloadInfoUrl + sep + 'format=json', true);
+            const infoText = await fetchText(pick.downloadInfoUrl + sep + 'format=json', false, authedHeaders(token));
             let parsed;
             try {
                 parsed = JSON.parse(infoText);
@@ -239,9 +273,12 @@ async function resolveViaDownloadInfo(trackId) {
                 transport: 'raw',
                 codec: pick.codec || 'mp3',
                 size: 0,
-                bitrate: pick.bitrateInKbps || pick.bitrate || 320
+                bitrate: pick.bitrateInKbps || pick.bitrate || 320,
+                preview: pick.preview === true
             };
-        } catch (_) {}
+        } catch (err) {
+            if (err && /превью|Плюс/.test(err.message)) throw err;
+        }
     }
     return null;
 }
@@ -340,21 +377,33 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         (async () => {
             const trackId = String(request.trackId);
             const signedUrl = request.signedUrl || null;
+            const token = await getToken(request);
 
+            // 1. Подписанный URL, перехваченный из реального трафика страницы.
             if (signedUrl) {
-                const fromSigned = await resolveViaSignedUrl(signedUrl);
-                if (fromSigned) return fromSigned;
+                try {
+                    const fromSigned = await resolveViaSignedUrl(signedUrl);
+                    if (fromSigned) return fromSigned;
+                } catch (_) {}
             }
 
+            // 2. Авторизованный V1 download-info — полный MP3 без шифрования.
+            if (token) {
+                const legacy = await resolveViaDownloadInfoAuthed(trackId, token);
+                if (legacy) return legacy;
+            }
+
+            // 3. V2 get-file-info с подписью (+ токен). encraw → нужна AES-CTR расшифровка.
             for (const quality of ['nq', 'hq', 'lossless']) {
                 try {
-                    const info = await resolveViaGetFileInfo(trackId, quality);
+                    const info = await resolveViaGetFileInfo(trackId, quality, token);
                     if (info) return info;
                 } catch (_) {}
             }
 
-            const legacy = await resolveViaDownloadInfo(trackId);
-            if (legacy) return legacy;
+            if (!token) {
+                throw new Error('Нет токена Яндекс Музыки. Откройте music.yandex.ru, войдите в аккаунт и проиграйте любой трек — расширение перехватит токен автоматически.');
+            }
 
             throw new Error('Не удалось получить ссылку на трек. Убедитесь, что вы залогинены на music.yandex.ru');
         })()

@@ -16,6 +16,30 @@ document.addEventListener('ym-ext-file-info', (event) => {
     };
 });
 
+// OAuth token captured by inject.js (MAIN world) from real page requests
+document.addEventListener('ym-ext-token', (event) => {
+    const detail = event && event.detail;
+    if (!detail || !detail.token) return;
+    try {
+        chrome.storage.local.set({
+            ymToken: detail.token,
+            ymTokenAt: Date.now()
+        });
+    } catch (_) {}
+});
+
+async function getYmToken() {
+    return new Promise((resolve) => {
+        try {
+            chrome.storage.local.get(['ymToken'], (items) => {
+                resolve((items && items.ymToken) || '');
+            });
+        } catch (_) {
+            resolve('');
+        }
+    });
+}
+
 function getCachedFileInfo(trackId) {
     const entry = fileInfoCache[String(trackId)];
     if (!entry) return null;
@@ -202,12 +226,14 @@ async function resolveTrackDownload(trackId, albumId, options = {}) {
     }
 
     const signedUrl = findSignedGetFileInfoUrl(tid);
+    const token = await getYmToken();
 
     try {
         const { info } = await sendBackgroundMessage({
             action: 'resolve_track_download',
             trackId: String(trackId),
-            signedUrl
+            signedUrl,
+            token
         });
         if (info && info.url) return info;
     } catch (e) {
