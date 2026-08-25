@@ -626,12 +626,22 @@ const YMTag = (function () {
         return concat(parts).buffer;
     }
 
+    // Приводим обложку к Uint8Array (fetch отдаёт ArrayBuffer)
+    function toBytes(v) {
+        if (!v) return null;
+        if (v instanceof Uint8Array) return v;
+        if (v instanceof ArrayBuffer) return new Uint8Array(v);
+        if (ArrayBuffer.isView(v)) return new Uint8Array(v.buffer, v.byteOffset, v.byteLength);
+        return null;
+    }
+
     return {
         tagM4a,
         tagFlac,
         detectAndTag(arrayBuffer, container, tags) {
-            if (container === 'm4a') return tagM4a(arrayBuffer, tags);
-            if (container === 'flac') return tagFlac(arrayBuffer, tags);
+            const t = { ...tags, cover: toBytes(tags.cover) };
+            if (container === 'm4a') return tagM4a(arrayBuffer, t);
+            if (container === 'flac') return tagFlac(arrayBuffer, t);
             throw new Error('Тегирование для контейнера ' + container + ' не поддерживается');
         }
     };
@@ -900,7 +910,7 @@ async function downloadTrackWithMetadata(trackId, albumId, fallbackTitle, btnEle
                     if (artists) writer.addTextFrame('TPE1', artists);
                     if (album) writer.addTextFrame('TALB', album);
                     if (year) writer.addTextFrame('TYER', year.toString());
-                    if (coverBuffer) writer.addPictureFrame(coverBuffer, 'image/jpeg');
+                    if (coverBuffer) writer.addPictureFrame(coverBuffer instanceof ArrayBuffer ? coverBuffer : coverBuffer.buffer.slice(coverBuffer.byteOffset, coverBuffer.byteOffset + coverBuffer.byteLength), 'image/jpeg');
                     audioBuffer = writer.getTaggedBuffer();
                 } else if (container === 'm4a' || container === 'flac') {
                     audioBuffer = YMTag.detectAndTag(audioBuffer, container, {
