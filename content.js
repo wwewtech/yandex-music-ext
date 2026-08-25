@@ -451,21 +451,16 @@ const YMTag = (function () {
         }
     }
 
-    function findChunkOffsetEntries(bytes, start, end, out) {
+    // Рекурсивно ищем stco/co64 на ЛЮБОЙ глубине внутри контейнера
+    // (реальный путь: moov/trak/mdia/minf/stbl/stco).
+    function findChunkOffsets(bytes, start, end, out) {
         walkAtoms(bytes, start, end, (name, off, size, header) => {
             if (name === 'stco' || name === 'co64') {
                 const entryCountOff = off + header + 4;
                 const count = bytesToU32(bytes, entryCountOff);
                 out.push({ tableOff: entryCountOff + 4, count, isCo64: name === 'co64' });
-            }
-        });
-    }
-
-    function findChunkOffsets(bytes, start, end, out) {
-        walkAtoms(bytes, start, end, (name, off, size, header) => {
-            const bodyStart = off + header;
-            if (name === 'moov' || name === 'trak' || name === 'mdia' || name === 'minf' || name === 'stbl') {
-                findChunkOffsetEntries(bytes, bodyStart, off + size, out);
+            } else if (['moov', 'trak', 'mdia', 'minf', 'stbl'].includes(name)) {
+                findChunkOffsets(bytes, off + header, off + size, out);
             }
         });
     }

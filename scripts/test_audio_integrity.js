@@ -12,8 +12,10 @@ function sh(cmd) {
     return execSync(cmd, { encoding: 'buffer', stdio: ['ignore', 'pipe', 'pipe'] }).toString();
 }
 
-// 1. Generate 30s reference AAC-in-MP4
-sh(`ffmpeg -y -v error -f lavfi -i "sine=frequency=440:duration=30" -c:a aac -b:a 192k "${orig}"`);
+// 1. Generate 30s reference AAC-in-MP4.
+// IMPORTANT: +faststart puts moov BEFORE mdat — this is the layout Yandex uses,
+// and it's the only layout where chunk-offset recalculation actually matters.
+sh(`ffmpeg -y -v error -f lavfi -i "sine=frequency=440:duration=30" -c:a aac -b:a 192k -movflags +faststart "${orig}"`);
 
 // 2. Tag it with YMTag from content.js (big ArrayBuffer cover to stress offsets)
 const src = fs.readFileSync(path.join(dir, '..', 'content.js'), 'utf8');
@@ -70,6 +72,48 @@ if (decodeErr.trim()) {
     process.exit(1);
 }
 console.log('[OK] ffmpeg decodes tagged file without errors');
+
+// 6. Chunk offsets must point past the inserted udta (regression guard for
+//    the "stco not recalculated" bug that produced garbled audio)
+{
+    const tb = fs.readFileSync(tagged);
+    const u = new Uint8Array(tb.buffer, tb.byteOffset, tb.byteLength);
+    const dv = new DataView(u.buffer, u.byteOffset, u.byteLength);
+    let moovOff = -1, mdatOff = -1;
+    let off = 0;
+    while (off + 8 <= u.length) {
+        const sz = dv.getUint32(off);
+        const nm = String.fromCharCode(u[off+4], u[off+5], u[off+6], u[off+7]);
+        if (nm === 'moov') moovOff = off;
+        if (nm === 'mdat') { mdatOff = off; break; }
+        if (sz < 8) break;
+        off += sz;
+    }
+    if (moovOff < 0 || mdatOff < 0) { console.error('[FAIL] moov/mdat not found'); process.exit(1); }
+    // find first stco recursively
+    const refs = [];
+    (function scan(start, end) {
+        let o = start;
+        while (o + 8 <= end) {
+            const sz = dv.getUint32(o);
+            const nm = String.fromCharCode(u[o+4], u[o+5], u[o+6], u[o+7]);
+            if (sz < 8 || o + sz > end) return;
+            if (nm === 'stco') { refs.push({ tableOff: o + 12, count: dv.getUint32(o + 8) }); return; }
+            if (['moov','trak','mdia','minf','stbl'].includes(nm)) scan(o + 8, o + sz);
+            o += sz;
+        }
+    })(moovOff + 8, moovOff + dv.getUint32(moovOff));
+    if (!refs.length) { console.error('[FAIL] no stco found'); process.exit(1); }
+    let bad = 0;
+    for (const r of refs) {
+        for (let i = 0; i < r.count; i++) {
+            const v = dv.getUint32(r.tableOff + i * 4);
+            if (v <= mdatOff) bad++;
+        }
+    }
+    if (bad > 0) { console.error('[FAIL] ' + bad + ' chunk offsets point before mdat!'); process.exit(1); }
+    console.log('[OK] all chunk offsets point into mdat (' + refs.length + ' stco tables)');
+}
 
 // cleanup
 fs.unlinkSync(orig); fs.unlinkSync(tagged);
