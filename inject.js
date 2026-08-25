@@ -53,8 +53,27 @@
         } catch (_) {}
     }
 
+    // Приоритет качества: lossless > mp4-lossless > mp3 > aac > he-aac; затем битрейт
+    function qualityScore(info) {
+        if (!info) return -1;
+        const codec = String(info.codec || '').toLowerCase();
+        let base = 0;
+        if (codec === 'flac') base = 5000;
+        else if (codec.includes('flac')) base = 4000;
+        else if (codec.includes('mp3')) base = 3000;
+        else if (codec.includes('he-aac')) base = 1000;
+        else base = 2000; // aac / aac-mp4
+        return base + (Number(info.bitrate || info.bitrateInKbps || 0) / 10);
+    }
+
     function remember(trackId, info) {
         if (!trackId || !info) return;
+        const existing = cache[String(trackId)];
+        if (existing && existing.info && qualityScore(existing.info) > qualityScore(info)) {
+            // Уже есть вариант лучше — не затираем его худшим
+            existing.ts = Date.now();
+            return;
+        }
         cache[String(trackId)] = {
             info,
             ts: Date.now()

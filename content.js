@@ -248,6 +248,59 @@ async function resolveTrackDownload(trackId, albumId, options = {}) {
     throw new Error('Не удалось получить ссылку на трек. Проверьте авторизацию на music.yandex.ru');
 }
 
+/* ---- Управление качеством плеера (для получения FLAC/320) ---------------- */
+
+function isHighQualityInfo(info) {
+    if (!info) return false;
+    const codec = String(info.codec || '').toLowerCase();
+    return codec.includes('flac') || /mp3/.test(codec);
+}
+
+async function setPlayerQuality(preferExcellent) {
+    try {
+        const btn = Array.from(document.querySelectorAll('button'))
+            .find(b => b.getAttribute('aria-label') === 'Настройки звука');
+        if (!btn) return false;
+        btn.click();
+        await new Promise(r => setTimeout(r, 900));
+
+        const options = Array.from(document.querySelectorAll('[role="option"]'));
+        if (!options.length) { document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })); return false; }
+
+        const target = preferExcellent
+            ? options.find(el => /Превосходное/.test(el.textContent))
+            : options.find(el => /Оптимальное/.test(el.textContent));
+        if (target) target.click();
+        await new Promise(r => setTimeout(r, 400));
+        return true;
+    } catch (_) {
+        return false;
+    }
+}
+
+/**
+ * Если перехваченный вариант низкого качества — временно включает «Превосходное»
+ * в плеере, прогревает трек (плеер сам запрашивает get-file-info с hq/lossless),
+ * и возвращает лучший вариант из кэша. Настройку пользователя возвращает обратно.
+ */
+async function upgradeQualityViaPlayer(trackId, albumId) {
+    const current = getCachedFileInfo(trackId);
+    if (current && isHighQualityInfo(current)) return current;
+
+    const switched = await setPlayerQuality(true);
+    if (!switched) return current;
+
+    try {
+        await autoWarmupTrack(trackId, albumId);
+    } finally {
+        // возвращаем прежнюю настройку качества
+        setTimeout(() => { setPlayerQuality(false); }, 500);
+    }
+
+    const upgraded = getCachedFileInfo(trackId);
+    return (upgraded && isHighQualityInfo(upgraded)) ? upgraded : (upgraded || current);
+}
+
 async function autoWarmupTrack(trackId, albumId) {
     const tid = String(trackId);
     const aid = albumId ? String(albumId) : null;
@@ -482,11 +535,22 @@ async function downloadTrackWithMetadata(trackId, albumId, fallbackTitle, btnEle
             toastHandle.update({ newStatus: 'Запрос ссылки через API Яндекса...', newProgress: 30 });
         }
 
-        const downloadInfo = await resolveTrackDownload(trackId, albumId, { allowRetry: true });
+        let downloadInfo = await resolveTrackDownload(trackId, albumId, { allowRetry: true });
+
+        // Если перехвачено низкое качество — пробуем поднять до FLAC/320 через плеер
+        if (!isHighQualityInfo(downloadInfo)) {
+            if (toastHandle) {
+                toastHandle.update({ newStatus: 'Запрос максимального качества...', newProgress: 40 });
+            }
+            try {
+                const upgraded = await upgradeQualityViaPlayer(trackId, albumId);
+                if (upgraded && upgraded.url) downloadInfo = upgraded;
+            } catch (_) {}
+        }
 
         const qualityLabel = downloadInfo.codec
             ? String(downloadInfo.codec).toUpperCase()
-            : (downloadInfo.key ? 'AAC 192' : 'MP3');
+            : (downloadInfo.key ? 'AAC' : 'MP3');
 
         if (toastHandle) {
             toastHandle.update({
@@ -497,47 +561,47 @@ async function downloadTrackWithMetadata(trackId, albumId, fallbackTitle, btnEle
         }
 
         const durationMs = trackInfo && trackInfo.durationMs ? trackInfo.durationMs : 0;
-        const canTagMp3 = appSettings.embedTags &&
-            !downloadInfo.key &&
-            (String(downloadInfo.codec).toLowerCase().includes('mp3') || downloadInfo.url.includes('/get-mp3/'));
 
-        let savedFilename = fileName;
+        // Скачиваем байты (background расшифровывает encraw при необходимости)
+        const fetched = await sendBackgroundMessage({
+            action: 'fetch_track_bytes',
+            url: downloadInfo.url,
+            key: downloadInfo.key,
+            expectedSize: downloadInfo.size,
+            codec: downloadInfo.codec
+        });
+        if (fetched && fetched.error) throw new Error(fetched.error);
 
-        if (canTagMp3) {
-            const fetched = await sendBackgroundMessage({
-                action: 'fetch_track_bytes',
-                url: downloadInfo.url,
-                key: downloadInfo.key,
-                expectedSize: downloadInfo.size,
-                codec: downloadInfo.codec
-            });
+        let audioBuffer = base64ToArrayBuffer(fetched.bytes);
+        const container = fetched.container || 'unknown';
+        const ext = fetched.ext || 'mp3';
+        const decodedSec = await getAudioDurationSeconds(audioBuffer);
 
-            let audioBuffer = base64ToArrayBuffer(fetched.bytes);
-            let decodedSec = await getAudioDurationSeconds(audioBuffer);
+        if (isLikelyPreviewByDuration(decodedSec, durationMs)) {
+            throw new Error('Получен только превью-фрагмент (~30с). Попробуйте нажать Play и скачать снова.');
+        }
 
-            if (isLikelyPreviewByDuration(decodedSec, durationMs)) {
-                throw new Error('Получен только превью-фрагмент (~30с). Попробуйте нажать Play и скачать снова.');
+        // Тегирование для всех контейнеров: MP3 → ID3v2, M4A → ilst, FLAC → Vorbis
+        if (appSettings.embedTags) {
+            if (toastHandle) {
+                toastHandle.update({
+                    newStatus: 'Вшивание тегов и обложки...',
+                    newProgress: 80,
+                    newState: 'loading'
+                });
             }
 
-            if (appSettings.embedTags && fetched.container === 'mp3') {
-                if (toastHandle) {
-                    toastHandle.update({
-                        newStatus: 'Вшивание ID3v2 тегов и обложки...',
-                        newProgress: 80,
-                        newState: 'loading'
-                    });
-                }
-
-                let coverBuffer = null;
-                if (coverUrl) {
-                    try {
-                        coverBuffer = await fetchBufferViaBackground(coverUrl);
-                    } catch (e) {
-                        console.warn('Не удалось скачать обложку', e);
-                    }
-                }
-
+            let coverBuffer = null;
+            if (coverUrl) {
                 try {
+                    coverBuffer = await fetchBufferViaBackground(coverUrl);
+                } catch (e) {
+                    console.warn('Не удалось скачать обложку', e);
+                }
+            }
+
+            try {
+                if (container === 'mp3') {
                     const writer = new window.ID3Writer(audioBuffer);
                     writer.addTextFrame('TIT2', title);
                     if (artists) writer.addTextFrame('TPE1', artists);
@@ -545,46 +609,37 @@ async function downloadTrackWithMetadata(trackId, albumId, fallbackTitle, btnEle
                     if (year) writer.addTextFrame('TYER', year.toString());
                     if (coverBuffer) writer.addPictureFrame(coverBuffer, 'image/jpeg');
                     audioBuffer = writer.getTaggedBuffer();
-                } catch (err) {
-                    console.warn('ID3Writer error:', err);
+                } else if ((container === 'm4a' || container === 'flac') && window.YMTagWriters) {
+                    audioBuffer = window.YMTagWriters.detectAndTag(audioBuffer, container, {
+                        title, artist: artists, album, year: year ? String(year) : '', cover: coverBuffer
+                    });
                 }
+            } catch (err) {
+                console.warn('Tagging error:', err);
             }
-
-            // В content script MV3 нет URL.createObjectURL — скачивание идёт через
-            // offscreen-документ расширения (см. offscreen.js).
-            const ext = fetched.ext || 'mp3';
-            savedFilename = `${fileName}.${ext}`;
-
-            if (toastHandle) {
-                toastHandle.update({
-                    newStatus: 'Сохранение файла...',
-                    newProgress: 90,
-                    newState: 'loading'
-                });
-            }
-
-            const dlResult = await sendBackgroundMessage({
-                action: 'download_bytes',
-                bytesBase64: arrayBufferToBase64(audioBuffer),
-                filename: savedFilename,
-                mime: ext === 'mp3' ? 'audio/mpeg' : 'application/octet-stream',
-                saveAs: appSettings.saveAs
-            });
-            if (dlResult && dlResult.error) throw new Error(dlResult.error);
-        } else {
-            const result = await sendBackgroundMessage({
-                action: 'download_track_audio',
-                url: downloadInfo.url,
-                key: downloadInfo.key,
-                expectedSize: downloadInfo.size,
-                codec: downloadInfo.codec,
-                filename: fileName,
-                saveAs: appSettings.saveAs
-            });
-
-            if (result.error) throw new Error(result.error);
-            savedFilename = result.filename || fileName;
         }
+
+        // В content script MV3 нет URL.createObjectURL — скачивание идёт через
+        // offscreen-документ расширения (см. offscreen.js).
+        let savedFilename = `${fileName}.${ext}`;
+
+        if (toastHandle) {
+            toastHandle.update({
+                newStatus: 'Сохранение файла...',
+                newProgress: 90,
+                newState: 'loading'
+            });
+        }
+
+        const mimeMap = { mp3: 'audio/mpeg', m4a: 'audio/mp4', flac: 'audio/flac' };
+        const dlResult = await sendBackgroundMessage({
+            action: 'download_bytes',
+            bytesBase64: arrayBufferToBase64(audioBuffer),
+            filename: savedFilename,
+            mime: mimeMap[ext] || 'application/octet-stream',
+            saveAs: appSettings.saveAs
+        });
+        if (dlResult && dlResult.error) throw new Error(dlResult.error);
 
         // Toast: Success
         if (toastHandle) {
@@ -687,8 +742,8 @@ function injectDownloadButton() {
 
     const btn = document.createElement('button');
     btn.id = 'ym-ext-download-btn';
-    btn.setAttribute('aria-label', 'Скачать в MP3 320 kbps');
-    btn.setAttribute('title', 'Скачать трек в MP3 (320 kbps HQ + ID3v2)');
+    btn.setAttribute('aria-label', 'Скачать трек');
+    btn.setAttribute('title', 'Скачать трек (максимальное качество + теги и обложка)');
     btn.innerHTML = ICONS.download;
 
     btn.onclick = async () => {
@@ -734,8 +789,8 @@ function injectListDownloadButtons() {
 
         const btn = document.createElement('button');
         btn.className = 'ym-ext-list-download-btn';
-        btn.setAttribute('aria-label', 'Скачать трек в MP3 320 kbps');
-        btn.setAttribute('title', 'Скачать трек (320 kbps HQ)');
+        btn.setAttribute('aria-label', 'Скачать трек');
+        btn.setAttribute('title', 'Скачать трек (максимальное качество)');
         btn.innerHTML = ICONS.downloadSmall;
 
         btn.onclick = async (e) => {
