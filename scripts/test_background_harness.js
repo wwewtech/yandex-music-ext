@@ -96,20 +96,42 @@ function assert(cond, msg) {
     assert(detect('0x66,0x4c,0x61,0x43,' + pad) === 'flac', 'detectContainer: fLaC -> flac');
 
     // ---- test 4: real network path — anonymous request must be blocked
-    //      by preview protection, NOT silently downloaded as 30s file ------
+    //      by preview protection, NOT silently downloaded as 30s file.
+    //      ALSO: preview-only must NOT abort the chain — get-file-info
+    //      must still be attempted afterwards. ---------------------------------
+    let gfiAttempts = 0;
+    const realFetch = sandbox.fetch;
+    sandbox.fetch = (url, init) => {
+        if (String(url).includes('get-file-info')) gfiAttempts++;
+        return realFetch(url, init);
+    };
+
     const resp = await send({ action: 'resolve_track_download', trackId: '153627759', token: '' });
     assert(typeof resp.error === 'string' && resp.error.length > 0,
         'anonymous resolve returns an error (no silent fallback)');
     assert(/превью|Плюс|залогинены/i.test(resp.error),
         `error is actionable for the user: "${resp.error}"`);
     assert(!resp.info, 'no download info leaked for anonymous request');
+    assert(gfiAttempts >= 1,
+        `chain continued past preview-only to get-file-info (${gfiAttempts} attempts)`);
 
-    // ---- test 5: download_bytes routes through offscreen ----------------
-    let offscreenPayload = null;
+    // ---- test 5: download_bytes -> offscreen makes blob URL, SW downloads --
+    let makeBlobMsg = null;
+    let downloadCallOpts = null;
     sandbox.chrome.runtime.sendMessage = (msg, cb) => {
-        if (msg && msg.target === 'offscreen') { offscreenPayload = msg; if (cb) cb({ downloadId: 42 }); return; }
+        if (msg && msg.target === 'offscreen' && msg.action === 'make_blob_url') {
+            makeBlobMsg = msg;
+            if (cb) cb({ blobUrl: 'blob:chrome-extension://fake/test' });
+            return;
+        }
+        if (msg && msg.target === 'offscreen' && msg.action === 'revoke_blob_url') {
+            if (cb) cb({ ok: true });
+            return;
+        }
         if (cb) cb({});
     };
+    sandbox.chrome.downloads.download = (opts, cb) => { downloadCallOpts = opts; cb(77); };
+
     const dlResp = await send({
         action: 'download_bytes',
         bytesBase64: Buffer.from('ID3test').toString('base64'),
@@ -117,9 +139,11 @@ function assert(cond, msg) {
         mime: 'audio/mpeg',
         saveAs: false
     });
-    assert(offscreenPayload && offscreenPayload.action === 'download_blob',
-        'download_bytes forwards payload to offscreen document');
-    assert(dlResp.downloadId === 42, 'offscreen download result is returned to caller');
+    assert(makeBlobMsg && makeBlobMsg.bytesBase64, 'offscreen asked to create blob URL');
+    assert(downloadCallOpts && downloadCallOpts.url === 'blob:chrome-extension://fake/test',
+        'background itself calls chrome.downloads.download with the blob URL');
+    assert(downloadCallOpts.filename === 'unit.mp3', 'filename passed through sanitized');
+    assert(dlResp.downloadId === 77, 'download result is returned to caller');
 
     console.log('\nALL HARNESS TESTS PASSED');
 })().catch((e) => { console.error('[FAIL] unexpected:', e); process.exit(1); });

@@ -132,18 +132,46 @@ async function ensureOffscreenDocument() {
     }
 }
 
-function downloadViaOffscreen(payload) {
+function offscreenRequest(payload) {
     return new Promise((resolve) => {
-        chrome.runtime.sendMessage({ target: 'offscreen', action: 'download_blob', ...payload }, (resp) => {
+        chrome.runtime.sendMessage({ target: 'offscreen', ...payload }, (resp) => {
             if (chrome.runtime.lastError) resolve({ error: chrome.runtime.lastError.message });
             else resolve(resp || {});
         });
     });
 }
 
+/**
+ * Скачивание байтов файла: offscreen создаёт Blob-ссылку (в SW createObjectURL
+ * недоступен), а саму загрузку выполняет background через chrome.downloads —
+ * в offscreen-документе API chrome.downloads недоступен.
+ */
 async function downloadBytesAsFile(bytesBase64, filename, mime, saveAs) {
     await ensureOffscreenDocument();
-    return downloadViaOffscreen({ bytesBase64, filename, mime, saveAs });
+
+    const made = await offscreenRequest({ action: 'make_blob_url', bytesBase64, mime });
+    if (made.error) return { error: made.error };
+    if (!made.blobUrl) return { error: 'offscreen не вернул blob-ссылку' };
+
+    const safeFilename = String(filename || 'track.mp3').replace(/[\\/:*?"<>|]/g, '_').trim();
+
+    const result = await new Promise((resolve) => {
+        chrome.downloads.download({
+            url: made.blobUrl,
+            filename: safeFilename,
+            saveAs: Boolean(saveAs)
+        }, (downloadId) => {
+            if (chrome.runtime.lastError) resolve({ error: chrome.runtime.lastError.message });
+            else resolve({ downloadId, filename: safeFilename });
+        });
+    });
+
+    // Отзываем ссылку позже (файл должен успеть сохраниться на диск).
+    setTimeout(() => {
+        offscreenRequest({ action: 'revoke_blob_url', blobUrl: made.blobUrl });
+    }, 120000);
+
+    return result;
 }
 
 async function fetchJson(url, useCredentials = true, extraHeaders = null) {
@@ -270,6 +298,7 @@ async function resolveViaDownloadInfoAuthed(trackId, token) {
         `https://api.music.yandex.net/tracks/${encodeURIComponent(trackId)}/download-info`,
         `https://api.music.yandex.ru/tracks/${encodeURIComponent(trackId)}/download-info`
     ];
+    let previewOnly = false;
 
     for (const endpoint of endpoints) {
         try {
@@ -277,10 +306,12 @@ async function resolveViaDownloadInfoAuthed(trackId, token) {
             const payload = await fetchJson(endpoint, true, authedHeaders(token));
             const items = Array.isArray(payload) ? payload : (payload.result || []);
 
-            // Защита от превью: если всё, что вернул API — preview, качать нельзя.
+            // Только превью? Запоминаем, но НЕ прерываем цепочку — полный трек
+            // может быть доступен через get-file-info (так работает веб-плеер).
             const fullItems = items.filter((i) => i && i.preview !== true);
             if (fullItems.length === 0 && items.length > 0) {
-                throw new Error('Трек доступен только как 30-секундное превью. Нужна подписка Плюс или повторный вход на music.yandex.ru');
+                previewOnly = true;
+                continue;
             }
 
             const pick = pickBestStream(fullItems.length ? fullItems : items, true);
@@ -298,19 +329,20 @@ async function resolveViaDownloadInfoAuthed(trackId, token) {
             if (!mp3Url) continue;
 
             return {
-                url: mp3Url,
-                key: null,
-                transport: 'raw',
-                codec: pick.codec || 'mp3',
-                size: 0,
-                bitrate: pick.bitrateInKbps || pick.bitrate || 320,
-                preview: pick.preview === true
+                info: {
+                    url: mp3Url,
+                    key: null,
+                    transport: 'raw',
+                    codec: pick.codec || 'mp3',
+                    size: 0,
+                    bitrate: pick.bitrateInKbps || pick.bitrate || 320,
+                    preview: pick.preview === true
+                },
+                previewOnly
             };
-        } catch (err) {
-            if (err && /превью|Плюс/.test(err.message)) throw err;
-        }
+        } catch (_) {}
     }
-    return null;
+    return { info: null, previewOnly };
 }
 
 async function resolveViaSignedUrl(signedUrl) {
@@ -404,9 +436,12 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             }
 
             // 2. V1 download-info — авторизация через cookie сессии (токен опционален).
-            //    Отдаёт полный MP3 без шифрования.
+            //    Отдаёт полный MP3 без шифрования. Если вернул только preview —
+            //    НЕ прерываем: пробуем get-file-info (путь веб-плеера).
+            let sawPreviewOnly = false;
             const legacy = await resolveViaDownloadInfoAuthed(trackId, token);
-            if (legacy) return legacy;
+            if (legacy && legacy.info) return legacy.info;
+            if (legacy && legacy.previewOnly) sawPreviewOnly = true;
 
             // 3. V2 get-file-info с подписью (+ cookie/токен). encraw → AES-CTR расшифровка.
             for (const quality of ['nq', 'hq', 'lossless']) {
@@ -416,7 +451,11 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 } catch (_) {}
             }
 
-            throw new Error('Не удалось получить ссылку на трек. Убедитесь, что вы залогинены на music.yandex.ru и у вас есть подписка Плюс, затем обновите страницу (Ctrl+F5)');
+            if (sawPreviewOnly) {
+                throw new Error('Трек доступен только как 30-секундное превью. Нужна подписка Плюс или повторный вход на music.yandex.ru');
+            }
+
+            throw new Error('Не удалось получить ссылку на трек. Убедитесь, что вы залогинены на music.yandex.ru, затем обновите страницу (Ctrl+F5)');
         })()
             .then(info => sendResponse({ info }))
             .catch(err => sendResponse({ error: err.message || String(err) }));

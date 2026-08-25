@@ -2,14 +2,19 @@
  * Yandex Music Downloader — Offscreen Document (Manifest V3)
  *
  * В MV3 URL.createObjectURL недоступен ни в content scripts, ни в service
- * worker. Offscreen-документ — единственное окружение расширения, где можно
- * создать Blob и blob-ссылку для chrome.downloads.download.
+ * worker. Offscreen-документ создаёт Blob и blob-ссылку.
+ *
+ * ВАЖНО: chrome.downloads в offscreen-документе НЕДОСТУПЕН, поэтому саму
+ * загрузку выполняет background.js по возвращённой blob-ссылке (тот же
+ * extension-origin, ссылка жива, пока мы её не отозвали).
  */
 
-chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-    if (!msg || msg.target !== 'offscreen' || msg.action !== 'download_blob') return;
+const heldBlobUrls = new Set();
 
-    (async () => {
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+    if (!msg || msg.target !== 'offscreen') return;
+
+    if (msg.action === 'make_blob_url') {
         try {
             const binary = atob(msg.bytesBase64 || '');
             const bytes = new Uint8Array(binary.length);
@@ -17,25 +22,20 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
             const blob = new Blob([bytes], { type: msg.mime || 'application/octet-stream' });
             const blobUrl = URL.createObjectURL(blob);
-
-            const safeFilename = String(msg.filename || 'track.mp3').replace(/[\\/:*?"<>|]/g, '_').trim();
-
-            chrome.downloads.download({
-                url: blobUrl,
-                filename: safeFilename,
-                saveAs: Boolean(msg.saveAs)
-            }, (downloadId) => {
-                setTimeout(() => URL.revokeObjectURL(blobUrl), 120000);
-                if (chrome.runtime.lastError) {
-                    sendResponse({ error: chrome.runtime.lastError.message });
-                } else {
-                    sendResponse({ downloadId, filename: safeFilename });
-                }
-            });
+            heldBlobUrls.add(blobUrl);
+            sendResponse({ blobUrl });
         } catch (e) {
             sendResponse({ error: e.message || String(e) });
         }
-    })();
+        return;
+    }
 
-    return true; // async sendResponse
+    if (msg.action === 'revoke_blob_url') {
+        if (msg.blobUrl && heldBlobUrls.has(msg.blobUrl)) {
+            URL.revokeObjectURL(msg.blobUrl);
+            heldBlobUrls.delete(msg.blobUrl);
+        }
+        sendResponse({ ok: true });
+        return;
+    }
 });
