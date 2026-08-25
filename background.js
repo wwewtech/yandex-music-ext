@@ -108,11 +108,42 @@ async function getToken(request) {
 }
 
 function authedHeaders(token) {
-    // X-Yandex-Music-Client имитирует мобильное приложение — открывает полные
-    // треки и высокие битрейты в /download-info (источник: yandex-music-downloader).
+    // Authorization опционален: веб-клиент авторизуется cookie, токен — бонус
+    // (открывает мобильные битрейты/FLAC в /download-info).
     const h = { ...API_HEADERS };
     if (token) h['Authorization'] = 'OAuth ' + token;
     return h;
+}
+
+/* ---- Offscreen document: единственное место в MV3 с URL.createObjectURL ---- */
+
+async function ensureOffscreenDocument() {
+    try {
+        if (await chrome.offscreen.hasDocument()) return;
+    } catch (_) {}
+    try {
+        await chrome.offscreen.createDocument({
+            url: 'offscreen.html',
+            reasons: ['BLOBS'],
+            justification: 'Создание blob-ссылок для скачивания аудиофайлов'
+        });
+    } catch (e) {
+        if (!/already exists|single/i.test(String(e && e.message))) throw e;
+    }
+}
+
+function downloadViaOffscreen(payload) {
+    return new Promise((resolve) => {
+        chrome.runtime.sendMessage({ target: 'offscreen', action: 'download_blob', ...payload }, (resp) => {
+            if (chrome.runtime.lastError) resolve({ error: chrome.runtime.lastError.message });
+            else resolve(resp || {});
+        });
+    });
+}
+
+async function downloadBytesAsFile(bytesBase64, filename, mime, saveAs) {
+    await ensureOffscreenDocument();
+    return downloadViaOffscreen({ bytesBase64, filename, mime, saveAs });
 }
 
 async function fetchJson(url, useCredentials = true, extraHeaders = null) {
@@ -231,10 +262,8 @@ async function resolveViaGetFileInfo(trackId, quality, token) {
 }
 
 /**
- * V1: авторизованный /tracks/{id}/download-info — отдаёт ПОЛНЫЙ трек (не preview)
- * в виде чистого MP3 без шифрования. Требует OAuth-токен.
- * Без токена этот эндпоинт возвращает только 30-секундные превью — поэтому
- * вызывать его без токена запрещено.
+ * V1: /tracks/{id}/download-info с cookie-авторизацией (+ OAuth-токен, если
+ * перехвачен) — отдаёт ПОЛНЫЙ трек (не preview) в виде чистого MP3 без шифрования.
  */
 async function resolveViaDownloadInfoAuthed(trackId, token) {
     const endpoints = [
@@ -244,7 +273,8 @@ async function resolveViaDownloadInfoAuthed(trackId, token) {
 
     for (const endpoint of endpoints) {
         try {
-            const payload = await fetchJson(endpoint, false, authedHeaders(token));
+            // credentials include: авторизация cookie-сессией music.yandex.ru
+            const payload = await fetchJson(endpoint, true, authedHeaders(token));
             const items = Array.isArray(payload) ? payload : (payload.result || []);
 
             // Защита от превью: если всё, что вернул API — preview, качать нельзя.
@@ -257,7 +287,7 @@ async function resolveViaDownloadInfoAuthed(trackId, token) {
             if (!pick?.downloadInfoUrl) continue;
 
             const sep = pick.downloadInfoUrl.includes('?') ? '&' : '?';
-            const infoText = await fetchText(pick.downloadInfoUrl + sep + 'format=json', false, authedHeaders(token));
+            const infoText = await fetchText(pick.downloadInfoUrl + sep + 'format=json', true, authedHeaders(token));
             let parsed;
             try {
                 parsed = JSON.parse(infoText);
@@ -310,23 +340,9 @@ async function downloadProcessedAudio(opts) {
     let filename = (opts.filename || 'track').replace(/[\\/:*?"<>|]/g, '_').trim();
     filename = filename.replace(/\.[^.]+$/, '') + '.' + ext;
 
-    const blob = new Blob([bytes], { type: 'application/octet-stream' });
-    const blobUrl = URL.createObjectURL(blob);
-
-    return new Promise((resolve) => {
-        chrome.downloads.download({
-            url: blobUrl,
-            filename,
-            saveAs: Boolean(opts.saveAs)
-        }, (downloadId) => {
-            setTimeout(() => URL.revokeObjectURL(blobUrl), 120000);
-            if (chrome.runtime.lastError) {
-                resolve({ error: chrome.runtime.lastError.message });
-            } else {
-                resolve({ downloadId, filename, size: bytes.length, container, ext });
-            }
-        });
-    });
+    const result = await downloadBytesAsFile(bytesToBase64(bytes), filename, 'application/octet-stream', Boolean(opts.saveAs));
+    if (result.error) return { error: result.error };
+    return { ...result, size: bytes.length, container, ext };
 }
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
@@ -387,13 +403,12 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 } catch (_) {}
             }
 
-            // 2. Авторизованный V1 download-info — полный MP3 без шифрования.
-            if (token) {
-                const legacy = await resolveViaDownloadInfoAuthed(trackId, token);
-                if (legacy) return legacy;
-            }
+            // 2. V1 download-info — авторизация через cookie сессии (токен опционален).
+            //    Отдаёт полный MP3 без шифрования.
+            const legacy = await resolveViaDownloadInfoAuthed(trackId, token);
+            if (legacy) return legacy;
 
-            // 3. V2 get-file-info с подписью (+ токен). encraw → нужна AES-CTR расшифровка.
+            // 3. V2 get-file-info с подписью (+ cookie/токен). encraw → AES-CTR расшифровка.
             for (const quality of ['nq', 'hq', 'lossless']) {
                 try {
                     const info = await resolveViaGetFileInfo(trackId, quality, token);
@@ -401,11 +416,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 } catch (_) {}
             }
 
-            if (!token) {
-                throw new Error('Нет токена Яндекс Музыки. Откройте music.yandex.ru, войдите в аккаунт и проиграйте любой трек — расширение перехватит токен автоматически.');
-            }
-
-            throw new Error('Не удалось получить ссылку на трек. Убедитесь, что вы залогинены на music.yandex.ru');
+            throw new Error('Не удалось получить ссылку на трек. Убедитесь, что вы залогинены на music.yandex.ru и у вас есть подписка Плюс, затем обновите страницу (Ctrl+F5)');
         })()
             .then(info => sendResponse({ info }))
             .catch(err => sendResponse({ error: err.message || String(err) }));
@@ -423,6 +434,13 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                     ext: extForContainer(container, request.codec)
                 });
             })
+            .catch(err => sendResponse({ error: err.message || String(err) }));
+        return true;
+    }
+
+    if (request.action === 'download_bytes') {
+        downloadBytesAsFile(request.bytesBase64, request.filename, request.mime, Boolean(request.saveAs))
+            .then(result => sendResponse(result))
             .catch(err => sendResponse({ error: err.message || String(err) }));
         return true;
     }

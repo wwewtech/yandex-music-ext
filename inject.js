@@ -77,16 +77,28 @@
         }
     }
 
+    // Рекурсивный поиск объекта с прямой ссылкой на аудио — устойчив к разным
+    // схемам ответов get-file-info и get-file-info/batch.
+    function findDownloadInfo(obj, depth) {
+        if (!obj || typeof obj !== 'object' || depth > 4) return null;
+        if (typeof obj.url === 'string' && obj.url.startsWith('http')) return obj;
+        for (const k of Object.keys(obj)) {
+            const found = findDownloadInfo(obj[k], depth + 1);
+            if (found) return found;
+        }
+        return null;
+    }
+
     function parsePayload(payload) {
-        const info = payload?.result?.downloadInfo || payload?.downloadInfo;
-        if (!info || !info.url) return null;
+        const info = findDownloadInfo(payload, 0);
+        if (!info) return null;
         return {
             url: info.url,
-            key: info.key || null,
+            key: info.key || info.decryptionKey || null,
             transport: info.transport || '',
             codec: info.codec || '',
             size: info.size || 0,
-            bitrate: info.bitrate || 0
+            bitrate: info.bitrate || info.bitrateInKbps || 0
         };
     }
 

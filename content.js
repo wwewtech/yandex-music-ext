@@ -343,6 +343,16 @@ function base64ToArrayBuffer(base64) {
     return bytes.buffer;
 }
 
+function arrayBufferToBase64(arrayBuffer) {
+    const bytes = new Uint8Array(arrayBuffer);
+    let binary = '';
+    const chunk = 0x8000;
+    for (let i = 0; i < bytes.length; i += chunk) {
+        binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+    }
+    return btoa(binary);
+}
+
 function isExtensionContextInvalidated(error) {
     const message = String(error?.message || error || '').toLowerCase();
     return message.includes('extension context invalidated');
@@ -540,29 +550,27 @@ async function downloadTrackWithMetadata(trackId, albumId, fallbackTitle, btnEle
                 }
             }
 
+            // В content script MV3 нет URL.createObjectURL — скачивание идёт через
+            // offscreen-документ расширения (см. offscreen.js).
             const ext = fetched.ext || 'mp3';
             savedFilename = `${fileName}.${ext}`;
-            const blob = new Blob([audioBuffer], { type: ext === 'mp3' ? 'audio/mpeg' : 'application/octet-stream' });
-            const blobUrl = URL.createObjectURL(blob);
 
-            try {
-                await sendBackgroundMessage({
-                    action: 'download',
-                    url: blobUrl,
-                    filename: fileName,
-                    saveAs: appSettings.saveAs
+            if (toastHandle) {
+                toastHandle.update({
+                    newStatus: 'Сохранение файла...',
+                    newProgress: 90,
+                    newState: 'loading'
                 });
-            } catch (err) {
-                const a = document.createElement('a');
-                a.href = blobUrl;
-                a.download = savedFilename;
-                a.style.display = 'none';
-                document.body.appendChild(a);
-                a.click();
-                a.remove();
             }
 
-            setTimeout(() => URL.revokeObjectURL(blobUrl), 60000);
+            const dlResult = await sendBackgroundMessage({
+                action: 'download_bytes',
+                bytesBase64: arrayBufferToBase64(audioBuffer),
+                filename: savedFilename,
+                mime: ext === 'mp3' ? 'audio/mpeg' : 'application/octet-stream',
+                saveAs: appSettings.saveAs
+            });
+            if (dlResult && dlResult.error) throw new Error(dlResult.error);
         } else {
             const result = await sendBackgroundMessage({
                 action: 'download_track_audio',

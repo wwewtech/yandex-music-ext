@@ -5,6 +5,15 @@
 
 ---
 
+## [1.2.1] — 2026-08-26
+
+### 🐛 Исправлено
+- **`URL.createObjectURL is not a function`**: в content script MV3 этот метод недоступен (а в service worker — тоже). Скачивание переведено на offscreen-документ (`offscreen.html`/`offscreen.js`, разрешение `offscreen`) — единственное окружение расширения, где можно создать Blob и blob-ссылку для `chrome.downloads.download`.
+- **«Нет токена Яндекс Музыки» без воспроизведения**: авторизация больше не требует OAuth-токен — используется cookie-сессия music.yandex.ru (`credentials: 'include'`, host_permissions уже были). Токен (если перехвачен) используется как бонус.
+- Парсинг ответов `get-file-info`/`get-file-info/batch` в inject.js сделан рекурсивным — устойчив к разным схемам ответов.
+
+---
+
 ## [1.2.0] — 2026-08-26
 
 ### 🐛 Исправлено
