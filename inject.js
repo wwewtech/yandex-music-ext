@@ -121,9 +121,58 @@
         };
     }
 
+    /* ---- Индекс метаданных треков (title -> ids) ---------------------- */
+    // Собираем из ЛЮБЫХ API-ответов объекты вида {id, title, albums:[{id}]}.
+    // Нужен для поверхностей без ссылок на треки («Моя волна», очереди).
+    function normTitle(t) {
+        return String(t || '')
+            .toLowerCase()
+            .replace(/[\s\u00a0]+/g, ' ')
+            .replace(/[^\p{L}\p{N} ]/gu, '')
+            .trim();
+    }
+
+    const reportedMetaKeys = new Set();
+
+    function collectTrackMetas(obj, depth, out) {
+        if (!obj || typeof obj !== 'object' || depth > 6) return;
+        if (Array.isArray(obj)) {
+            for (const item of obj) collectTrackMetas(item, depth + 1, out);
+            return;
+        }
+        const id = obj.id != null ? String(obj.id) : null;
+        const title = typeof obj.title === 'string' ? obj.title : '';
+        if (id && title && Array.isArray(obj.albums) && obj.albums[0] && obj.albums[0].id != null) {
+            out.push({ trackId: id, albumId: String(obj.albums[0].id), title });
+            return; // внутрь конкретного трека не углубляемся
+        }
+        for (const k of Object.keys(obj)) {
+            try { collectTrackMetas(obj[k], depth + 1, out); } catch (_) {}
+        }
+    }
+
+    async function harvestTrackMetas(url, response) {
+        if (!isApiUrl(url) || url.includes('get-file-info')) return;
+        try {
+            const clone = response.clone();
+            const payload = await clone.json();
+            const found = [];
+            collectTrackMetas(payload, 0, found);
+            for (const meta of found) {
+                const key = normTitle(meta.title) + '|' + meta.trackId;
+                if (reportedMetaKeys.has(key)) continue;
+                reportedMetaKeys.add(key);
+                try {
+                    document.dispatchEvent(new CustomEvent('ym-ext-track-meta', { detail: meta }));
+                } catch (_) {}
+            }
+        } catch (_) {}
+    }
+
     async function handleResponse(url, response) {
         if (!url.includes('api.music.yandex.ru/get-file-info') &&
             !url.includes('api.music.yandex.net/get-file-info')) {
+            harvestTrackMetas(url, response);
             return;
         }
         const trackId = extractTrackId(url);
@@ -177,6 +226,35 @@
         return originalSetHeader.call(this, name, value);
     };
 
+    /* ---- Тихое сохранение файла -------------------------------------- */
+    // Скачивание инициируется самой страницей (<a download>), поэтому Chrome
+    // НЕ показывает системное уведомление «Загрузка завершена», которое
+    // появляется при скачивании через chrome.downloads API расширения.
+    window.addEventListener('message', (event) => {
+        if (event.source !== window) return;
+        const msg = event.data;
+        if (!msg || msg.type !== 'ym-ext-save-file') return;
+        let ack;
+        try {
+            const bin = atob(msg.bytesBase64);
+            const bytes = new Uint8Array(bin.length);
+            for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+            const blob = new Blob([bytes], { type: msg.mime || 'application/octet-stream' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = msg.filename || 'track.mp3';
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            setTimeout(() => URL.revokeObjectURL(url), 60000);
+            ack = { type: 'ym-ext-saved', ok: true, filename: msg.filename };
+        } catch (e) {
+            ack = { type: 'ym-ext-saved', ok: false, error: String((e && e.message) || e) };
+        }
+        window.postMessage(ack, '*');
+    });
+
     XMLHttpRequest.prototype.send = function (...args) {
         this.addEventListener('load', function () {
             try {
@@ -185,6 +263,7 @@
                 const trackId = extractTrackId(this.__ymExtUrl);
                 const info = parsePayload(payload);
                 if (trackId && info) remember(trackId, info);
+                else harvestTrackMetas(this.__ymExtUrl, { clone: () => ({ json: () => payload }) });
             } catch (_) {}
         });
         return originalSend.apply(this, args);

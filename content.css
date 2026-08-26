@@ -120,7 +120,7 @@
   transform: scale(0.97) !important;
 }
 
-/* Windows 11 Fluent InfoBar / In-Page Toast */
+/* ---- In-page индикатор записи (эстетика студийной деки) ---------------- */
 #ym-ext-toast-container {
   position: fixed !important;
   bottom: 96px !important;
@@ -130,44 +130,45 @@
   flex-direction: column !important;
   gap: 10px !important;
   pointer-events: none !important;
-  font-family: "Segoe UI Variable Text", "Segoe UI", -apple-system, BlinkMacSystemFont, "Inter", Roboto, sans-serif !important;
+  font-family: "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, sans-serif !important;
 }
 
 .ym-ext-toast {
   pointer-events: auto !important;
-  width: 340px !important;
-  background: rgba(22, 23, 30, 0.94) !important;
-  border: 1px solid rgba(255, 255, 255, 0.12) !important;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.45) !important;
-  backdrop-filter: blur(20px) saturate(160%) !important;
-  border-radius: 10px !important;
-  padding: 12px 14px !important;
+  width: 330px !important;
+  background: #14120e !important;
+  border: 1px solid #2e2921 !important;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.55) !important;
+  border-radius: 5px !important;
+  padding: 11px 13px 12px !important;
   display: flex !important;
   flex-direction: column !important;
-  gap: 8px !important;
-  color: #ffffff !important;
-  animation: ym-slide-in 240ms cubic-bezier(0.16, 1, 0.3, 1) forwards !important;
+  gap: 9px !important;
+  color: #ede6d3 !important;
+  animation: ym-slide-in 220ms cubic-bezier(0.16, 1, 0.3, 1) forwards !important;
   transition: opacity 200ms ease, transform 200ms ease !important;
 }
 
 .ym-ext-toast.ym-closing {
   opacity: 0 !important;
-  transform: translateX(30px) scale(0.95) !important;
+  transform: translateX(30px) scale(0.97) !important;
 }
 
 .ym-toast-row {
   display: flex !important;
   align-items: center !important;
-  gap: 10px !important;
+  gap: 11px !important;
 }
 
 .ym-toast-cover {
-  width: 38px !important;
-  height: 38px !important;
-  border-radius: 6px !important;
+  width: 40px !important;
+  height: 40px !important;
+  border-radius: 3px !important;
   object-fit: cover !important;
   flex-shrink: 0 !important;
-  border: 1px solid rgba(255, 255, 255, 0.1) !important;
+  border: 1px solid #2e2921 !important;
+  background: #0d0c0a !important;
+  padding: 2px !important;
 }
 
 .ym-toast-info {
@@ -179,9 +180,10 @@
 }
 
 .ym-toast-title {
+  font-family: "Cascadia Code", Consolas, monospace !important;
   font-size: 13px !important;
   font-weight: 600 !important;
-  color: #ffffff !important;
+  color: #ede6d3 !important;
   white-space: nowrap !important;
   overflow: hidden !important;
   text-overflow: ellipsis !important;
@@ -189,51 +191,129 @@
 
 .ym-toast-artist {
   font-size: 11px !important;
-  color: #a1a1aa !important;
+  color: #968d77 !important;
   white-space: nowrap !important;
   overflow: hidden !important;
   text-overflow: ellipsis !important;
 }
 
 .ym-toast-status {
+  margin-top: 2px !important;
   font-size: 11px !important;
   font-family: "Cascadia Code", Consolas, monospace !important;
+  letter-spacing: 0.03em !important;
   display: flex !important;
   align-items: center !important;
   gap: 6px !important;
 }
 
+.ym-toast-status svg { flex-shrink: 0 !important; }
+
 .ym-toast-status.ym-status-loading {
-  color: #ffcc00 !important;
+  color: #ffb92e !important;
 }
 
 .ym-toast-status.ym-status-success {
-  color: #10b981 !important;
+  color: #5fb870 !important;
 }
 
 .ym-toast-status.ym-status-error {
-  color: #ef4444 !important;
+  color: #e05b4c !important;
 }
 
+/* VU-шкала прогресса из сегментов-рисков */
 .ym-toast-progress-bar {
-  width: 100% !important;
-  height: 3px !important;
-  background: rgba(255, 255, 255, 0.08) !important;
-  border-radius: 2px !important;
-  overflow: hidden !important;
+  display: flex !important;
+  gap: 3px !important;
+  height: 5px !important;
 }
 
 .ym-toast-progress-fill {
-  height: 100% !important;
-  background: #ffcc00 !important;
-  width: 30% !important;
-  border-radius: 2px !important;
+  --ym-vu-count: 26;
+  flex: 1 !important;
+  position: relative !important;
+  background:
+    repeating-linear-gradient(90deg,
+      transparent 0 calc(100% / var(--ym-vu-count) - 3px),
+      #241f19 calc(100% / var(--ym-vu-count) - 3px) calc(100% / var(--ym-vu-count))) !important;
   transition: width 300ms ease !important;
 }
 
-.ym-toast-progress-fill.ym-done {
-  background: #10b981 !important;
-  width: 100% !important;
+.ym-toast-progress-fill::before {
+  content: "" !important;
+  position: absolute !important;
+  inset: 0 !important;
+  width: var(--ym-fill, 30%) !important;
+  background: repeating-linear-gradient(90deg,
+      #ffb92e 0 calc(100% / var(--ym-vu-count) * 0.62),
+      transparent calc(100% / var(--ym-vu-count) * 0.62) calc(100% / var(--ym-vu-count))) !important;
+  border-radius: 1px !important;
+}
+
+.ym-toast-progress-fill.ym-done::before {
+  background: repeating-linear-gradient(90deg,
+      #5fb870 0 calc(100% / var(--ym-vu-count) * 0.62),
+      transparent calc(100% / var(--ym-vu-count) * 0.62) calc(100% / var(--ym-vu-count))) !important;
+}
+
+/* ---- Универсальные hover-кнопки возле любого трека --------------------- */
+.ym-ext-row-host {
+  /* position задаётся инжектором (relative), здесь только поведение */
+}
+
+button.ym-ext-hover-btn {
+  position: absolute !important;
+  right: 10px !important;
+  top: 50% !important;
+  transform: translateY(-50%) scale(0.92) !important;
+  width: 30px !important;
+  height: 30px !important;
+  border-radius: 50% !important;
+  background: #14120e !important;
+  border: 1px solid #2e2921 !important;
+  color: #ffb92e !important;
+  cursor: pointer !important;
+  z-index: 50 !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.45) !important;
+  transition: opacity 140ms ease, transform 140ms cubic-bezier(0.16, 1, 0.3, 1),
+              background-color 140ms ease, color 140ms ease !important;
+}
+
+.ym-ext-row-host:hover button.ym-ext-hover-btn,
+.ym-ext-row-host:focus-within button.ym-ext-hover-btn {
+  opacity: 1 !important;
+  pointer-events: auto !important;
+  transform: translateY(-50%) scale(1) !important;
+}
+
+button.ym-ext-hover-btn:hover {
+  background: #241f19 !important;
+  border-color: #ffb92e !important;
+}
+
+button.ym-ext-hover-btn:active {
+  transform: translateY(-50%) scale(0.9) !important;
+}
+
+button.ym-ext-hover-btn.ym-loading svg {
+  animation: ym-spin 1s linear infinite;
+}
+
+button.ym-ext-hover-btn.ym-success {
+  color: #5fb870 !important;
+  border-color: #5fb870 !important;
+}
+
+button.ym-ext-hover-btn.ym-error {
+  color: #e05b4c !important;
+  border-color: #e05b4c !important;
 }
 
 /* Batch Modal Drawer */
@@ -254,15 +334,15 @@
 
 .ym-batch-box {
   width: 440px !important;
-  background: #181922 !important;
-  border: 1px solid rgba(255, 255, 255, 0.12) !important;
-  border-radius: 12px !important;
+  background: #14120e !important;
+  border: 1px solid #2e2921 !important;
+  border-radius: 6px !important;
   padding: 20px !important;
   box-shadow: 0 16px 48px rgba(0, 0, 0, 0.6) !important;
   display: flex !important;
   flex-direction: column !important;
   gap: 16px !important;
-  color: #ffffff !important;
+  color: #ede6d3 !important;
 }
 
 .ym-batch-header {
@@ -339,8 +419,8 @@
 }
 
 .ym-batch-btn-start {
-  background: #ffcc00 !important;
-  color: #0e0f14 !important;
+  background: #ffb92e !important;
+  color: #12100d !important;
 }
 
 /* Animations */

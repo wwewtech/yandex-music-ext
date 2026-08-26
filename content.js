@@ -28,6 +28,28 @@ document.addEventListener('ym-ext-token', (event) => {
     } catch (_) {}
 });
 
+/* Индекс треков из API-ответов (для поверхностей без ссылок: «Моя волна») */
+const trackMetaByTitle = new Map();
+const negativeLabelCache = new Set();
+
+function normalizeTitle(t) {
+    return String(t || '')
+        .toLowerCase()
+        .replace(/[\s\u00a0]+/g, ' ')
+        .replace(/[^\p{L}\p{N} ]/gu, '')
+        .trim();
+}
+
+document.addEventListener('ym-ext-track-meta', (event) => {
+    const meta = event && event.detail;
+    if (!meta || !meta.title || !meta.trackId) return;
+    const key = normalizeTitle(meta.title);
+    if (key && !trackMetaByTitle.has(key)) {
+        trackMetaByTitle.set(key, meta);
+        negativeLabelCache.clear();
+    }
+});
+
 async function getYmToken() {
     return new Promise((resolve) => {
         try {
@@ -52,6 +74,7 @@ let appSettings = {
     embedTags: true,
     toasts: true,
     filenamePattern: 'artist-title',
+    filenameTemplate: '{artist} — {title}',
     saveAs: false
 };
 
@@ -124,8 +147,8 @@ function showToast({ title, artist, coverUrl, statusText, progress = 30, state =
                 </div>
             </div>
         </div>
-        <div class="ym-toast-progress-bar">
-            <div class="ym-toast-progress-fill ${progress >= 100 ? 'ym-done' : ''}" style="width: ${progress}%"></div>
+        <div class="ym-toast-progress-bar" aria-hidden="true">
+            <div class="ym-toast-progress-fill ${progress >= 100 ? 'ym-done' : ''}" style="--ym-fill: ${progress}%"></div>
         </div>
     `;
 
@@ -144,7 +167,7 @@ function showToast({ title, artist, coverUrl, statusText, progress = 30, state =
             if (iconEl) iconEl.innerHTML = newState === 'loading' ? ICONS.spinner : newState === 'success' ? ICONS.success : ICONS.error;
         }
         if (newProgress !== undefined && fillEl) {
-            fillEl.style.width = `${newProgress}%`;
+            fillEl.style.setProperty('--ym-fill', `${newProgress}%`);
             if (newProgress >= 100) fillEl.classList.add('ym-done');
         }
         if (dismissAfter > 0) {
@@ -754,10 +777,16 @@ async function fetchBufferViaBackground(url) {
     });
 }
 
-function formatFilename(title, artists, album) {
+function formatFilename(title, artists, album, year) {
     const pattern = appSettings.filenamePattern || 'artist-title';
     let base = '';
-    if (pattern === 'title-artist' && artists) {
+    if (pattern === 'custom') {
+        base = String(appSettings.filenameTemplate || '{artist} — {title}')
+            .replaceAll('{artist}', artists)
+            .replaceAll('{title}', title)
+            .replaceAll('{album}', album)
+            .replaceAll('{year}', String(year || ''));
+    } else if (pattern === 'title-artist' && artists) {
         base = `${title} — ${artists}`;
     } else if (pattern === 'title-only' || !artists) {
         base = title;
@@ -814,7 +843,7 @@ async function downloadTrackWithMetadata(trackId, albumId, fallbackTitle, btnEle
             }
         }
 
-        const fileName = formatFilename(title, artists, album);
+        const fileName = formatFilename(title, artists, album, year);
 
         // Toast: Start
         toastHandle = showToast({
@@ -920,27 +949,55 @@ async function downloadTrackWithMetadata(trackId, albumId, fallbackTitle, btnEle
             }
         }
 
-        // В content script MV3 нет URL.createObjectURL — скачивание идёт через
-        // offscreen-документ расширения (см. offscreen.js).
         let savedFilename = `${fileName}.${ext}`;
 
         if (toastHandle) {
             toastHandle.update({
-                newStatus: 'Сохранение файла...',
+                newStatus: 'Сохранение файла…',
                 newProgress: 90,
                 newState: 'loading'
             });
         }
 
         const mimeMap = { mp3: 'audio/mpeg', m4a: 'audio/mp4', flac: 'audio/flac' };
-        const dlResult = await sendBackgroundMessage({
-            action: 'download_bytes',
-            bytesBase64: arrayBufferToBase64(audioBuffer),
-            filename: savedFilename,
-            mime: mimeMap[ext] || 'application/octet-stream',
-            saveAs: appSettings.saveAs
-        });
-        if (dlResult && dlResult.error) throw new Error(dlResult.error);
+        const bytesBase64 = arrayBufferToBase64(audioBuffer);
+
+        if (appSettings.saveAs) {
+            // Диалог «Сохранить как…» возможен только через chrome.downloads —
+            // этот путь показывает системное уведомление браузера.
+            const dlResult = await sendBackgroundMessage({
+                action: 'download_bytes',
+                bytesBase64,
+                filename: savedFilename,
+                mime: mimeMap[ext] || 'application/octet-stream',
+                saveAs: true
+            });
+            if (dlResult && dlResult.error) throw new Error(dlResult.error);
+        } else {
+            // Тихое сохранение: <a download> в MAIN-world странице — без
+            // системного уведомления «Загрузка завершена».
+            const saved = await new Promise((resolve) => {
+                let settled = false;
+                const onSaved = (event) => {
+                    if (event.source !== window || !event.data || event.data.type !== 'ym-ext-saved') return;
+                    if (settled) return;
+                    settled = true;
+                    window.removeEventListener('message', onSaved);
+                    resolve(event.data);
+                };
+                window.addEventListener('message', onSaved);
+                window.postMessage({
+                    type: 'ym-ext-save-file',
+                    bytesBase64,
+                    filename: savedFilename,
+                    mime: mimeMap[ext] || 'application/octet-stream'
+                }, '*');
+                setTimeout(() => {
+                    if (!settled) { settled = true; window.removeEventListener('message', onSaved); resolve({ ok: true }); }
+                }, 30000);
+            });
+            if (saved && saved.ok === false) throw new Error(saved.error || 'Не удалось сохранить файл');
+        }
 
         // Toast: Success
         if (toastHandle) {
@@ -1109,6 +1166,99 @@ function injectListDownloadButtons() {
     });
 }
 
+/* ==========================================================================
+   Universal Download Buttons — возле ЛЮБОГО трека
+   ========================================================================== */
+
+// Hover-кнопка внутри строки-хоста (absolute, справа)
+function makeHoverButton(meta) {
+    const btn = document.createElement('button');
+    btn.className = 'ym-ext-hover-btn';
+    btn.setAttribute('aria-label', 'Скачать трек');
+    btn.setAttribute('title', `Скачать «${meta.title}» (максимальное качество)`);
+    btn.innerHTML = ICONS.downloadSmall;
+
+    btn.addEventListener('click', async (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        await downloadTrackWithMetadata(meta.trackId, meta.albumId, meta.title, btn);
+    });
+    return btn;
+}
+
+function attachHoverButton(host, meta) {
+    if (host.querySelector('.ym-ext-hover-btn')) return;
+    const pos = getComputedStyle(host).position;
+    if (pos === 'static' || !pos) host.style.position = 'relative';
+    host.classList.add('ym-ext-row-host');
+    host.appendChild(makeHoverButton(meta));
+}
+
+// 1) Любая ссылка /album/N/track/M без нашей кнопки → hover-кнопка на строке
+function injectUniversalLinkButtons() {
+    const links = document.querySelectorAll('a[href*="/album/"][href*="/track/"]');
+    links.forEach(link => {
+        const href = link.getAttribute('href') || '';
+        const m = href.match(/\/album\/(\d+)\/track\/(\d+)/);
+        if (!m) return;
+
+        // Уже покрыто точечными инжекторами или другим universal-хостом?
+        const existingHost = link.closest('.ym-ext-row-host, [class*="CommonTrack_root"], [class*="TrackPlaylist_track"], .d-track');
+        if (existingHost && existingHost.querySelector('.ym-ext-list-download-btn, .ym-ext-hover-btn')) return;
+
+        // Поднимаемся до «строки»: предок без второй track-ссылки и разумной высоты
+        let row = link;
+        while (row.parentElement && row.parentElement !== document.body) {
+            const parent = row.parentElement;
+            if (parent.querySelectorAll('a[href*="/track/"]').length > 1) break;
+            const h = parent.getBoundingClientRect().height;
+            if (h > 150 || h === 0) break;
+            row = parent;
+        }
+        attachHoverButton(row, { trackId: m[2], albumId: m[1], title: link.textContent.trim() || 'Трек' });
+    });
+}
+
+// 2) Строки БЕЗ ссылок («Моя волна», очереди): совпадение aria-label/текста с индексом
+function findMetaForLabel(label) {
+    const key = normalizeTitle(label);
+    if (!key || key.length < 3) return null;
+    if (negativeLabelCache.has(key)) return null;
+
+    let meta = trackMetaByTitle.get(key);
+    if (!meta && key.length >= 6) {
+        // частичное: label может содержать префикс действия («Слушать …»)
+        for (const [k, v] of trackMetaByTitle) {
+            if (k.length >= 6 && (key.includes(k) || k.includes(key))) { meta = v; break; }
+        }
+    }
+    if (!meta) {
+        negativeLabelCache.add(key);
+        if (negativeLabelCache.size > 2000) negativeLabelCache.clear();
+    }
+    return meta || null;
+}
+
+let lastMetaScan = 0;
+function injectMetaButtons() {
+    const now = Date.now();
+    if (now - lastMetaScan < 1500) return;
+    lastMetaScan = now;
+    if (trackMetaByTitle.size === 0) return;
+
+    document.querySelectorAll('[aria-label]').forEach(el => {
+        if (el.closest('.ym-ext-row-host')) return;
+        if (el.querySelector('.ym-ext-hover-btn')) return;
+        const label = el.getAttribute('aria-label') || '';
+        if (label.length < 3 || label.length > 120) return;
+        const meta = findMetaForLabel(label);
+        if (!meta) return;
+        const rect = el.getBoundingClientRect();
+        if (rect.height < 20 || rect.height > 120) return;
+        attachHoverButton(el, meta);
+    });
+}
+
 function injectBatchHeaderButton() {
     if (document.getElementById('ym-ext-batch-header-btn')) return;
 
@@ -1239,6 +1389,8 @@ function openBatchDownloadModal() {
 const observer = new MutationObserver(() => {
     injectDownloadButton();
     injectListDownloadButtons();
+    injectUniversalLinkButtons();
+    injectMetaButtons();
     injectBatchHeaderButton();
 });
 
@@ -1247,4 +1399,9 @@ observer.observe(document.body, { childList: true, subtree: true });
 // Initial injection run
 injectDownloadButton();
 injectListDownloadButtons();
+injectUniversalLinkButtons();
+injectMetaButtons();
 injectBatchHeaderButton();
+
+// Периодический проход для строк из сетевого индекса (волна подгружает треки лениво)
+setInterval(injectMetaButtons, 2000);

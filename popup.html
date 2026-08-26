@@ -3,156 +3,125 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#12100d">
   <title>Yandex Music Downloader</title>
   <link rel="stylesheet" href="popup.css">
 </head>
 <body>
-  <div class="app-container">
-    <!-- Header -->
-    <header class="app-header">
-      <div class="brand-group">
-        <div class="brand-icon">
-          <svg width="20" height="20" viewBox="0 0 128 128" fill="none">
-            <rect x="7" y="7" width="114" height="114" rx="28" fill="#121316" stroke="#262932" stroke-width="2"/>
-            <rect x="20" y="49" width="5" height="30" rx="2.5" fill="#ffcc00" opacity="0.65"/>
-            <rect x="32" y="35" width="5" height="58" rx="2.5" fill="#ffcc00"/>
-            <rect x="91" y="35" width="5" height="58" rx="2.5" fill="#ffcc00"/>
-            <rect x="103" y="49" width="5" height="30" rx="2.5" fill="#ffcc00" opacity="0.65"/>
-            <rect x="58.5" y="33" width="11" height="34" rx="5.5" fill="#ffffff"/>
-            <path d="M64 83 L46 63 L82 63 Z" fill="#ffffff"/>
-            <rect x="46" y="89" width="36" height="5.5" rx="2.75" fill="#ffcc00"/>
-          </svg>
-        </div>
-        <div class="brand-text">
-          <h1 class="brand-title">Yandex Music</h1>
-          <span class="brand-badge">Downloader</span>
-        </div>
+  <div class="deck">
+
+    <!-- Шапка: модель прибора + лампа питания -->
+    <header class="deck-head">
+      <div class="deck-id">
+        <span class="deck-model">YM&#8209;DL</span>
+        <span class="deck-rev">MK.III</span>
       </div>
-      <div class="header-status" id="headerStatus">
-        <span class="status-dot"></span>
-        <span class="status-label" id="statusLabel">Готов к работе</span>
+      <div class="power" id="powerLamp" role="status">
+        <span class="power-lamp" aria-hidden="true"></span>
+        <span class="power-label" id="statusLabel">Готов</span>
       </div>
     </header>
 
-    <!-- Main Content -->
-    <main class="app-main">
-      <!-- Active Track Card -->
-      <section class="card active-track-card" id="trackCard">
-        <div class="card-header-compact">
-          <span class="section-tag">ТЕКУЩИЙ ТРЕК</span>
-          <span class="bitrate-chip">320 KBPS HQ</span>
-        </div>
-        
-        <div class="track-media" id="trackMedia">
-          <div class="cover-wrapper">
-            <img src="icons/icon128.png" alt="Обложка" id="trackCover" class="track-cover">
-            <div class="cover-glow"></div>
-          </div>
-          <div class="track-info">
-            <div class="track-title" id="trackTitle">Ожидание трека...</div>
-            <div class="track-artist" id="trackArtist">Запустите воспроизведение на music.yandex.ru</div>
-            <div class="track-album" id="trackAlbum"></div>
-          </div>
-        </div>
-
-        <button class="btn btn-primary" id="downloadCurrentBtn">
-          <svg class="btn-icon" width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
-            <path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM17 13l-5 5-5-5h3V9h4v4h3z"/>
-          </svg>
-          <span id="downloadBtnText">Скачать этот трек</span>
-        </button>
-      </section>
-
-      <!-- Batch Download Card -->
-      <section class="card batch-card">
-        <div class="card-row">
-          <div class="card-info">
-            <div class="card-title">Пакетное скачивание</div>
-            <div class="card-desc">Скачать текущий плейлист или открытый альбом</div>
-          </div>
-          <button class="btn btn-secondary btn-sm" id="batchDownloadBtn">
-            <svg class="btn-icon" width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
-              <path d="M4 6H2v14c0 1.1.9 2 2 2h14v-2H4V6zm16-4H8c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm-1 9h-4v4h-2v-4H9V9h4V5h2v4h4v2z"/>
-            </svg>
-            <span>Скачать всё</span>
-          </button>
-        </div>
-      </section>
-
-      <!-- Settings Card Group -->
-      <section class="card settings-group">
-        <div class="section-tag mb-8">НАСТРОЙКИ СОХРАНЕНИЯ</div>
-        
-        <!-- Toggle: Embed Cover & Tags -->
-        <div class="setting-item">
-          <div class="setting-text">
-            <span class="setting-label">Вшивать ID3v2 теги и обложку</span>
-            <span class="setting-hint">Встраивает артиста, альбом, год и HQ обложку</span>
-          </div>
-          <label class="fluent-switch">
-            <input type="checkbox" id="settingEmbedTags" checked>
-            <span class="slider"></span>
-          </label>
-        </div>
-
-        <!-- Toggle: In-Page InfoBar Toasts -->
-        <div class="setting-item">
-          <div class="setting-text">
-            <span class="setting-label">Уведомления в плеере</span>
-            <span class="setting-hint">Windows 11 InfoBar статус загрузки</span>
-          </div>
-          <label class="fluent-switch">
-            <input type="checkbox" id="settingToasts" checked>
-            <span class="slider"></span>
-          </label>
-        </div>
-
-        <!-- Select: Filename Pattern -->
-        <div class="setting-item">
-          <div class="setting-text">
-            <span class="setting-label">Формат имени файла</span>
-            <span class="setting-hint">Шаблон сохранения на диск</span>
-          </div>
-          <div class="select-wrapper">
-            <select id="settingFilenamePattern" class="fluent-select">
-              <option value="artist-title">Артист — Название.mp3</option>
-              <option value="title-artist">Название — Артист.mp3</option>
-              <option value="title-only">Только название.mp3</option>
-            </select>
-          </div>
-        </div>
-
-        <!-- Toggle: Ask Save Directory -->
-        <div class="setting-item">
-          <div class="setting-text">
-            <span class="setting-label">Запрос папки для каждого трека</span>
-            <span class="setting-hint">Диалоговое окно «Сохранить как...»</span>
-          </div>
-          <label class="fluent-switch">
-            <input type="checkbox" id="settingSaveAs">
-            <span class="slider"></span>
-          </label>
-        </div>
-      </section>
-    </main>
-
-    <!-- Footer -->
-    <footer class="app-footer">
-      <div class="version-chip">v1.1.0 • MV3</div>
-      <div class="footer-links">
-        <a href="https://github.com/wwewtech/yandex-music-ext" target="_blank" class="footer-link" title="GitHub Repository">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor">
-            <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/>
-          </svg>
-          <span>GitHub</span>
-        </a>
-        <a href="https://github.com/wwewtech/yandex-music-ext/issues" target="_blank" class="footer-link" title="Report Issue">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor">
-            <path d="M20 8h-2.81c-.45-.78-1.07-1.45-1.82-1.96L17 4.41 15.59 3l-2.17 2.17C12.96 5.06 12.49 5 12 5c-.49 0-.96.06-1.41.17L8.41 3 7 4.41l1.62 1.63C7.88 6.55 7.26 7.22 6.81 8H4v2h2.09c-.05.33-.09.66-.09 1v1H4v2h2v1c0 .34.04.67.09 1H4v2h2.81c1.04 1.79 2.97 3 5.19 3s4.15-1.21 5.19-3H20v-2h-2.09c.05-.33.09-.66.09-1v-1h2v-2h-2v-1c0-.34-.04-.67-.09-1H20V8zm-6 8h-4v-2h4v2zm0-4h-4v-2h4v2z"/>
-          </svg>
-          <span>Баги</span>
-        </a>
+    <!-- Лента трека -->
+    <section class="tape" aria-live="polite">
+      <div class="tape-cover-frame">
+        <img src="icons/icon128.png" alt="" id="trackCover" class="tape-cover" width="72" height="72">
+        <span class="tape-screws" aria-hidden="true"></span>
       </div>
+      <div class="tape-meta">
+        <div class="tape-title" id="trackTitle">—</div>
+        <div class="tape-artist" id="trackArtist">воспроизведение не запущено</div>
+        <div class="tape-album" id="trackAlbum"></div>
+      </div>
+    </section>
+
+    <!-- VU-шкала состояния -->
+    <div class="vu" aria-hidden="true">
+      <span class="vu-seg"></span><span class="vu-seg"></span><span class="vu-seg"></span>
+      <span class="vu-seg"></span><span class="vu-seg"></span><span class="vu-seg"></span>
+      <span class="vu-seg"></span><span class="vu-seg"></span><span class="vu-seg"></span>
+      <span class="vu-seg"></span><span class="vu-seg"></span><span class="vu-seg"></span>
+      <span class="vu-seg"></span><span class="vu-seg"></span><span class="vu-seg"></span>
+      <span class="vu-seg"></span><span class="vu-seg"></span><span class="vu-seg"></span>
+      <span class="vu-seg"></span><span class="vu-seg"></span><span class="vu-seg"></span>
+      <span class="vu-seg"></span><span class="vu-seg vu-hot"></span><span class="vu-seg vu-hot"></span>
+    </div>
+
+    <!-- Клавиша загрузки -->
+    <button class="key" id="downloadCurrentBtn">
+      <svg class="key-icon" width="17" height="17" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+        <path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/>
+      </svg>
+      <span id="downloadBtnText">Скачать трек</span>
+    </button>
+
+    <!-- Пакетная запись -->
+    <button class="row-action" id="batchDownloadBtn">
+      <span class="row-action-label">Записать всё</span>
+      <span class="row-action-hint">плейлист или альбом целиком</span>
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+        <path d="M9 18l6-6-6-6v12z"/>
+      </svg>
+    </button>
+
+    <!-- Панель настроек -->
+    <section class="panel" aria-label="Настройки">
+      <div class="panel-head">
+        <span>Панель</span>
+        <span class="panel-rule" aria-hidden="true"></span>
+      </div>
+
+      <label class="sw-row">
+        <span class="sw-text">
+          <span class="sw-name">Теги и обложка</span>
+          <span class="sw-hint">вшить метаданные и арт в файл</span>
+        </span>
+        <input type="checkbox" role="switch" id="settingEmbedTags" checked>
+        <span class="sw" aria-hidden="true"><i></i></span>
+      </label>
+
+      <label class="sw-row">
+        <span class="sw-text">
+          <span class="sw-name">Индикация на странице</span>
+          <span class="sw-hint">шкала прогресса поверх плеера</span>
+        </span>
+        <input type="checkbox" role="switch" id="settingToasts" checked>
+        <span class="sw" aria-hidden="true"><i></i></span>
+      </label>
+
+      <div class="sel-row">
+        <span class="sw-text">
+          <span class="sw-name">Имя файла</span>
+          <span class="sw-hint" id="nameHint">шаблон сохранения</span>
+        </span>
+      </div>
+      <div class="sel-wrap">
+        <select id="settingFilenamePattern" aria-label="Формат имени файла">
+          <option value="artist-title">Артист — Название</option>
+          <option value="title-artist">Название — Артист</option>
+          <option value="title-only">Название</option>
+          <option value="custom">Свой шаблон…</option>
+        </select>
+        <input type="text" id="settingFilenameCustom" class="tpl-input" spellcheck="false"
+               placeholder="{artist} — {title}" aria-label="Свой шаблон имени файла" hidden>
+        <span class="tpl-tokens" id="tplTokens" hidden>{artist} {title} {album} {year}</span>
+      </div>
+
+      <label class="sw-row">
+        <span class="sw-text">
+          <span class="sw-name">Спрашивать папку</span>
+          <span class="sw-hint">диалог браузера перед каждым файлом</span>
+        </span>
+        <input type="checkbox" role="switch" id="settingSaveAs">
+        <span class="sw" aria-hidden="true"><i></i></span>
+      </label>
+    </section>
+
+    <!-- Подвал -->
+    <footer class="deck-foot">
+      <span class="foot-ver">v1.4.0</span>
+      <a href="https://github.com/wwewtech/yandex-music-ext" target="_blank" rel="noopener" class="foot-link">репозиторий</a>
+      <a href="https://github.com/wwewtech/yandex-music-ext/issues" target="_blank" rel="noopener" class="foot-link">сообщить о баге</a>
     </footer>
   </div>
 
