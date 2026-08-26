@@ -316,6 +316,51 @@ button.ym-ext-hover-btn.ym-error {
   border-color: #e05b4c !important;
 }
 
+/* ---- Кнопка скачивания в плеере «Моей волны» --------------------------- */
+button.ym-ext-vibe-btn {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  width: 34px !important;
+  height: 34px !important;
+  border-radius: 50% !important;
+  background: transparent !important;
+  border: 1px solid #2e2921 !important;
+  color: #ffb92e !important;
+  cursor: pointer !important;
+  margin: 0 4px !important;
+  padding: 0 !important;
+  flex-shrink: 0 !important;
+  transition: transform 120ms cubic-bezier(0.16, 1, 0.3, 1),
+              background-color 150ms ease,
+              border-color 150ms ease,
+              color 150ms ease !important;
+  outline: none !important;
+}
+
+button.ym-ext-vibe-btn:hover {
+  background: rgba(255, 185, 46, 0.12) !important;
+  border-color: #ffb92e !important;
+}
+
+button.ym-ext-vibe-btn:active {
+  transform: scale(0.9) !important;
+}
+
+button.ym-ext-vibe-btn.ym-loading svg {
+  animation: ym-spin 1s linear infinite;
+}
+
+button.ym-ext-vibe-btn.ym-success {
+  color: #5fb870 !important;
+  border-color: #5fb870 !important;
+}
+
+button.ym-ext-vibe-btn.ym-error {
+  color: #e05b4c !important;
+  border-color: #e05b4c !important;
+}
+
 /* Batch Modal Drawer */
 #ym-ext-batch-modal {
   position: fixed !important;

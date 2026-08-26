@@ -1259,6 +1259,48 @@ function injectMetaButtons() {
     });
 }
 
+// Кнопка скачивания в плеере «Моей волны» (VibePlayerBar)
+function injectVibePlayerButton() {
+    if (document.getElementById('ym-ext-vibe-download-btn')) return;
+    const bar = document.querySelector('[class*="VibePlayerBar_root"]');
+    if (!bar) return;
+
+    const likeBtn = Array.from(bar.querySelectorAll('button')).find(b =>
+        /^Нравится$/.test(b.getAttribute('aria-label') || ''));
+    if (!likeBtn || !likeBtn.parentElement) return;
+
+    const btn = document.createElement('button');
+    btn.id = 'ym-ext-vibe-download-btn';
+    btn.className = 'ym-ext-vibe-btn';
+    btn.setAttribute('aria-label', 'Скачать трек');
+    btn.setAttribute('title', 'Скачать трек (максимальное качество + теги и обложка)');
+    btn.innerHTML = ICONS.downloadSmall;
+
+    btn.onclick = async () => {
+        const nameEl = bar.querySelector('[class*="VibePlayerbarMeta_trackNameText"]:not([aria-hidden="true"])')
+            || bar.querySelector('[class*="VibePlayerbarMeta_trackNameText"]');
+        const title = nameEl ? (nameEl.textContent || '').trim() : '';
+        const artistsEl = document.querySelector('[class*="VibeDynamicArtists_root"] [title]');
+        const artistHint = artistsEl ? (artistsEl.getAttribute('title') || artistsEl.textContent || '') : '';
+
+        const meta = title ? findMetaForLabel(title) : null;
+        if (!meta) {
+            showToast({
+                title: title || 'Трек',
+                artist: artistHint,
+                statusText: 'Трек ещё не определён — переключите песню вперёд/назад и повторите',
+                progress: 100,
+                state: 'error',
+                duration: 4500
+            });
+            return;
+        }
+        await downloadTrackWithMetadata(meta.trackId, meta.albumId, meta.title, btn);
+    };
+
+    likeBtn.parentElement.insertBefore(btn, likeBtn.nextSibling);
+}
+
 function injectBatchHeaderButton() {
     if (document.getElementById('ym-ext-batch-header-btn')) return;
 
@@ -1391,6 +1433,7 @@ const observer = new MutationObserver(() => {
     injectListDownloadButtons();
     injectUniversalLinkButtons();
     injectMetaButtons();
+    injectVibePlayerButton();
     injectBatchHeaderButton();
 });
 
@@ -1401,6 +1444,7 @@ injectDownloadButton();
 injectListDownloadButtons();
 injectUniversalLinkButtons();
 injectMetaButtons();
+injectVibePlayerButton();
 injectBatchHeaderButton();
 
 // Периодический проход для строк из сетевого индекса (волна подгружает треки лениво)
