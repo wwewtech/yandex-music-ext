@@ -35,3 +35,9 @@ build/
 t1.txt
 t2.txt
 *.out.txt
+
+# Scraped network dumps / debug URL lists (never commit)
+data.txt
+data2.txt
+data3.txt
+data*.txt
