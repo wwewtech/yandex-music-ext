@@ -56,7 +56,8 @@ function httpGetJson(url) {
     await send('Page.enable', {});
 
     // Fresh album to force a brand-new player queue
-    await send('Page.navigate', { url: 'https://music.yandex.ru/album/2307672' });
+    // Актуальный публичный альбом (старый 2307672 → not-found, проверено 06.11.2026)
+    await send('Page.navigate', { url: 'https://music.yandex.ru/album/43177815' });
     await new Promise(r => setTimeout(r, 6000));
 
     const clickResult = await send('Runtime.evaluate', {

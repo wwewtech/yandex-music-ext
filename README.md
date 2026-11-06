@@ -75,6 +75,11 @@ git clone https://github.com/wwewtech/yandex-music-ext.git
 node --check background.js content.js popup.js
 ```
 
+Регресс-проверка покрытия кнопок на живом сайте (нужен Edge/Chromium с расширением и `--remote-debugging-port=9223`):
+```bash
+node scripts/test_surfaces.js
+```
+
 ---
 
 ## Дисклеймер

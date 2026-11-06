@@ -120,6 +120,23 @@
   transform: scale(0.97) !important;
 }
 
+/* Вариант для «плоских» заголовков (Коллекция, Чарт) */
+.ym-ext-batch-header-btn--plain {
+  height: 32px !important;
+  padding: 0 14px !important;
+  font-size: 13px !important;
+  margin-left: 14px !important;
+  vertical-align: middle !important;
+  background: rgba(255, 255, 255, 0.12) !important;
+  color: inherit !important;
+  border-color: rgba(255, 255, 255, 0.2) !important;
+}
+
+.ym-ext-batch-header-btn--plain svg {
+  width: 16px !important;
+  height: 16px !important;
+}
+
 /* ---- In-page индикатор записи (эстетика студийной деки) ---------------- */
 #ym-ext-toast-container {
   position: fixed !important;

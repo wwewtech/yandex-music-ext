@@ -6,14 +6,23 @@
 const SALT = 'XGRlBW9FXlekgbPrRHuSiA';
 
 const fileInfoCache = {};
+/* Последние треки, для которых плеер запрашивал поток (get-file-info).
+ * Нужен как fallback для «Моей волны»: бар может показывать «трек (slowed)»,
+ * тогда как API-название короче — по самому свежему file-info вычислим id. */
+const recentFileInfoTracks = [];
 
 document.addEventListener('ym-ext-file-info', (event) => {
     const detail = event && event.detail;
     if (!detail || !detail.trackId || !detail.info) return;
-    fileInfoCache[String(detail.trackId)] = {
+    const trackId = String(detail.trackId);
+    fileInfoCache[trackId] = {
         info: detail.info,
         ts: Date.now()
     };
+    const existing = recentFileInfoTracks.findIndex((x) => x.trackId === trackId);
+    if (existing !== -1) recentFileInfoTracks.splice(existing, 1);
+    recentFileInfoTracks.unshift({ trackId, ts: Date.now() });
+    if (recentFileInfoTracks.length > 12) recentFileInfoTracks.length = 12;
 });
 
 // OAuth token captured by inject.js (MAIN world) from real page requests
@@ -30,7 +39,19 @@ document.addEventListener('ym-ext-token', (event) => {
 
 /* Индекс треков из API-ответов (для поверхностей без ссылок: «Моя волна») */
 const trackMetaByTitle = new Map();
+const trackMetaById = new Map();
+const recentMetas = [];
 const negativeLabelCache = new Set();
+
+/**
+ * Диагностика: включить в консоли страницы —
+ *   localStorage.setItem('ym-dl-debug', '1')  (выключить: removeItem)
+ */
+function ymDebugLog(...args) {
+    try {
+        if (window.localStorage.getItem('ym-dl-debug') === '1') console.log('[YM-DL]', ...args);
+    } catch (_) {}
+}
 
 function normalizeTitle(t) {
     return String(t || '')
@@ -48,6 +69,16 @@ document.addEventListener('ym-ext-track-meta', (event) => {
         trackMetaByTitle.set(key, meta);
         negativeLabelCache.clear();
     }
+    if (meta.albumId) {
+        trackMetaById.set(String(meta.trackId), meta);
+    }
+    // порядок важен для fallback-поиска по свежим трекам (vibe-бар)
+    const recentIdx = recentMetas.findIndex((x) => String(x.trackId) === String(meta.trackId));
+    if (recentIdx !== -1) recentMetas.splice(recentIdx, 1);
+    recentMetas.unshift(meta);
+    if (recentMetas.length > 20) recentMetas.length = 20;
+
+    ymDebugLog('track-meta:', meta.title, 'id=' + meta.trackId, 'album=' + meta.albumId, '| index=' + trackMetaByTitle.size);
 });
 
 async function getYmToken() {
@@ -1194,6 +1225,19 @@ function attachHoverButton(host, meta) {
     host.appendChild(makeHoverButton(meta));
 }
 
+// Поднимаемся от ссылки до «строки»: предок без второй track-ссылки и разумной высоты
+function liftRowForLink(link) {
+    let row = link;
+    while (row.parentElement && row.parentElement !== document.body) {
+        const parent = row.parentElement;
+        if (parent.querySelectorAll('a[href*="/track/"]').length > 1) break;
+        const h = parent.getBoundingClientRect().height;
+        if (h > 150 || h === 0) break;
+        row = parent;
+    }
+    return row;
+}
+
 // 1) Любая ссылка /album/N/track/M без нашей кнопки → hover-кнопка на строке
 function injectUniversalLinkButtons() {
     const links = document.querySelectorAll('a[href*="/album/"][href*="/track/"]');
@@ -1206,17 +1250,132 @@ function injectUniversalLinkButtons() {
         const existingHost = link.closest('.ym-ext-row-host, [class*="CommonTrack_root"], [class*="TrackPlaylist_track"], .d-track');
         if (existingHost && existingHost.querySelector('.ym-ext-list-download-btn, .ym-ext-hover-btn')) return;
 
-        // Поднимаемся до «строки»: предок без второй track-ссылки и разумной высоты
-        let row = link;
-        while (row.parentElement && row.parentElement !== document.body) {
-            const parent = row.parentElement;
-            if (parent.querySelectorAll('a[href*="/track/"]').length > 1) break;
-            const h = parent.getBoundingClientRect().height;
-            if (h > 150 || h === 0) break;
-            row = parent;
-        }
-        attachHoverButton(row, { trackId: m[2], albumId: m[1], title: link.textContent.trim() || 'Трек' });
+        attachHoverButton(liftRowForLink(link), {
+            trackId: m[2],
+            albumId: m[1],
+            title: link.textContent.trim() || 'Трек'
+        });
     });
+
+    // 1b) Ссылки только на трек (/track/M) — новый дизайн может убрать album из URL.
+    // albumId восстанавливаем из индекса метаданных, собранного inject.js.
+    document.querySelectorAll('a[href*="/track/"]:not([href*="/album/"])').forEach(link => {
+        const href = link.getAttribute('href') || '';
+        const m = href.match(/\/track\/(\d+)/);
+        if (!m) return;
+
+        const existingHost = link.closest('.ym-ext-row-host, [class*="CommonTrack_root"], [class*="TrackPlaylist_track"], .d-track');
+        if (existingHost && existingHost.querySelector('.ym-ext-list-download-btn, .ym-ext-hover-btn')) return;
+
+        const byId = trackMetaById.get(String(m[1]));
+        if (!byId || !byId.albumId) return; // альбом ещё не подсмотрен в API-ответах
+
+        attachHoverButton(liftRowForLink(link), {
+            trackId: m[1],
+            albumId: String(byId.albumId),
+            title: (byId.title || link.textContent.trim() || 'Трек')
+        });
+    });
+}
+
+/**
+ * Убираем «украшения» из названия в vibe-баре: Яндекс показывает
+ * «болен (slowed)», а в API трек называется «болен».
+ */
+function stripTitleQualifiers(title) {
+    return normalizeTitle(title)
+        .replace(/\b(slowed|speed up|speedup|sped up|nightcore|remix|reverb|reverbed|bass boosted|8d audio|8d|acoustic|live|radio edit|cover)\b/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+}
+
+// Поиск метаданных по подписи (без негативного кэша — для «подождать и повторить»)
+function lookupTrackMeta(label) {
+    const key = normalizeTitle(label);
+    if (!key || key.length < 3) return null;
+
+    let meta = trackMetaByTitle.get(key);
+    if (meta) return meta;
+
+    const clean = stripTitleQualifiers(key);
+    if (clean && clean !== key) {
+        meta = trackMetaByTitle.get(clean);
+        if (meta) return meta;
+    }
+
+    // Частичное совпадение: сначала свежие треки (vibe-бар может добавлять
+    // «(slowed)» к названию), «болен (slowed)» → «болен»; затем весь индекс
+    // (label может содержать префикс действия «Слушать …»).
+    for (const candidate of recentMetas) {
+        const k = normalizeTitle(candidate.title);
+        if (!k || k.length < 4 || !key.includes(k)) continue;
+        return candidate;
+    }
+    for (const [k, v] of trackMetaByTitle) {
+        if (k.length >= 6 && (key.includes(k) || k.includes(key))) return v;
+    }
+    return null;
+}
+
+/** Свежие названия похожи? («болен (slowed)» ≈ «болен») */
+function titleMatchesBar(barTitle, metaTitle) {
+    const a = stripTitleQualifiers(barTitle);
+    const b = stripTitleQualifiers(metaTitle);
+    if (!a || !b) return true;
+    if (a === b) return true;
+    const shorter = a.length <= b.length ? a : b;
+    const longer = a.length <= b.length ? b : a;
+    if (shorter.length < 4) return false;
+    return longer.includes(shorter);
+}
+
+/** Метаданные трека через API (для треков, которые не попали в перехват) */
+async function fetchTrackMetaById(trackId) {
+    try {
+        const resp = await sendBackgroundMessage({
+            action: 'fetch_json',
+            url: `https://api.music.yandex.ru/tracks/${encodeURIComponent(trackId)}`
+        });
+        const payload = resp && resp.json;
+        if (!payload) return null;
+        const item = Array.isArray(payload.result) ? payload.result[0] : (payload.result || payload);
+        if (!item || !item.id) return null;
+        const album = (item.albums && item.albums[0]) || null;
+        if (!album || album.id == null) return null;
+        const meta = {
+            trackId: String(item.id),
+            albumId: String(album.id),
+            title: item.title || '',
+            artists: (item.artists || []).map((a) => a.name).filter(Boolean)
+        };
+        trackMetaById.set(meta.trackId, meta);
+        ymDebugLog('fetchTrackMetaById:', JSON.stringify(meta));
+        return meta;
+    } catch (e) {
+        ymDebugLog('fetchTrackMetaById failed:', String(e));
+        return null;
+    }
+}
+
+/**
+ * Резерв для «Моей волны»: самый свежий трек, для которого плеер запрашивал
+ * поток, — это почти всегда текущий трек. Название сверяем, чтобы не скачать
+ * предыдущий/следующий.
+ */
+async function resolveVibeMetaFromFileInfo(barTitle) {
+    const cutoff = Date.now() - 120000;
+    const candidates = recentFileInfoTracks.filter((x) => x.ts >= cutoff).slice(0, 5);
+    if (!candidates.length) return null;
+    for (const candidate of candidates) {
+        const cached = trackMetaById.get(String(candidate.trackId));
+        if (cached && cached.albumId) {
+            if (!barTitle || titleMatchesBar(barTitle, cached.title)) return cached;
+            continue;
+        }
+        const fetched = await fetchTrackMetaById(candidate.trackId);
+        if (fetched && (!barTitle || titleMatchesBar(barTitle, fetched.title))) return fetched;
+    }
+    return null;
 }
 
 // 2) Строки БЕЗ ссылок («Моя волна», очереди): совпадение aria-label/текста с индексом
@@ -1225,18 +1384,28 @@ function findMetaForLabel(label) {
     if (!key || key.length < 3) return null;
     if (negativeLabelCache.has(key)) return null;
 
-    let meta = trackMetaByTitle.get(key);
-    if (!meta && key.length >= 6) {
-        // частичное: label может содержать префикс действия («Слушать …»)
-        for (const [k, v] of trackMetaByTitle) {
-            if (k.length >= 6 && (key.includes(k) || k.includes(key))) { meta = v; break; }
-        }
-    }
+    const meta = lookupTrackMeta(key);
     if (!meta) {
         negativeLabelCache.add(key);
         if (negativeLabelCache.size > 2000) negativeLabelCache.clear();
     }
-    return meta || null;
+    return meta;
+}
+
+/**
+ * «Моя волна»: метаданные текущего трека приходят из сети с задержкой.
+ * Ждём до timeoutMs, прежде чем показать ошибку.
+ */
+async function waitForTrackMeta(label, timeoutMs = 2500) {
+    const started = Date.now();
+    let meta = lookupTrackMeta(label);
+    while (!meta && Date.now() - started < timeoutMs) {
+        await new Promise((resolve) => setTimeout(resolve, 120));
+        meta = lookupTrackMeta(label);
+    }
+    ymDebugLog('waitForTrackMeta:', JSON.stringify(label), '->', meta ? meta.trackId : 'not found',
+        '(' + (Date.now() - started) + 'ms, index=' + trackMetaByTitle.size + ')');
+    return meta;
 }
 
 let lastMetaScan = 0;
@@ -1246,24 +1415,72 @@ function injectMetaButtons() {
     lastMetaScan = now;
     if (trackMetaByTitle.size === 0) return;
 
-    document.querySelectorAll('[aria-label]').forEach(el => {
+    // Фолбэк для карточек без ссылок на трек: цепляемся за aria-label/title,
+    // совпадающий с названием известного трека из API-ответов.
+    document.querySelectorAll('[aria-label], [title]').forEach(el => {
         if (el.closest('.ym-ext-row-host')) return;
+        if (el.closest('[class*="PlayerBar"], [class*="VibePlayerBar"], [class*="Navbar"], [class*="Sidebar"]')) return;
         if (el.querySelector('.ym-ext-hover-btn')) return;
-        const label = el.getAttribute('aria-label') || '';
+        const label = el.getAttribute('aria-label') || el.getAttribute('title') || '';
         if (label.length < 3 || label.length > 120) return;
         const meta = findMetaForLabel(label);
         if (!meta) return;
         const rect = el.getBoundingClientRect();
-        if (rect.height < 20 || rect.height > 120) return;
+        if (rect.height < 20 || rect.height > 260 || rect.width > 900) return;
         attachHoverButton(el, meta);
     });
 }
 
 // Кнопка скачивания в плеере «Моей волны» (VibePlayerBar)
+function getVibeBar() {
+    return document.querySelector('[class*="VibePlayerBar_root"]');
+}
+
+/**
+ * Трек из бара «Моей волны». Разметка Яндекса меняется, поэтому источники
+ * идут по приоритету:
+ *  1) ссылка на трек внутри бара (если появится) — самый надёжный источник id;
+ *  2) название: VibePlayerbarTrackName_trackNameText__* (новый дизайн) или
+ *     VibePlayerbarMeta_trackNameText (старый);
+ *  3) запасной вариант — любой *trackNameText* внутри бара.
+ */
+function getVibeTrackInfo(bar) {
+    const empty = { trackId: null, albumId: null, title: '', artist: '', coverUrl: '' };
+    if (!bar) return empty;
+
+    const link = bar.querySelector('a[href*="/album/"][href*="/track/"]')
+        || bar.querySelector('a[href*="/track/"]');
+    let trackId = null;
+    let albumId = null;
+    let linkTitle = '';
+    if (link) {
+        const href = link.getAttribute('href') || '';
+        const withAlbum = href.match(/\/album\/(\d+)\/track\/(\d+)/);
+        const trackOnly = href.match(/\/track\/(\d+)/);
+        if (withAlbum) { albumId = withAlbum[1]; trackId = withAlbum[2]; }
+        else if (trackOnly) { trackId = trackOnly[1]; }
+        linkTitle = (link.textContent || '').trim();
+    }
+
+    const nameEl = bar.querySelector('[class*="trackNameText"]:not([aria-hidden="true"])')
+        || bar.querySelector('[class*="VibePlayerbarTrackName"]:not([aria-hidden="true"])')
+        || bar.querySelector('[class*="VibePlayerbarMeta_trackNameText"]:not([aria-hidden="true"])')
+        || bar.querySelector('[class*="trackNameText"]');
+    const title = linkTitle || (nameEl ? (nameEl.textContent || '').trim() : '');
+
+    const artistsEl = bar.querySelector('[class*="VibeDynamicArtists_root"] [title], [class*="VibePlayerbarMeta"] [class*="artist"]');
+    const artist = artistsEl ? (artistsEl.getAttribute('title') || artistsEl.textContent || '').trim() : '';
+
+    const coverImg = bar.querySelector('[class*="AlbumCover"] img, [class*="coverImage"]');
+    const coverUrl = coverImg && coverImg.src ? coverImg.src : '';
+
+    return { trackId, albumId, title, artist, coverUrl };
+}
+
 function injectVibePlayerButton() {
-    if (document.getElementById('ym-ext-vibe-download-btn')) return;
-    const bar = document.querySelector('[class*="VibePlayerBar_root"]');
+    const bar = getVibeBar();
     if (!bar) return;
+    if (document.getElementById('ym-ext-vibe-download-btn')) return;
 
     const likeBtn = Array.from(bar.querySelectorAll('button')).find(b =>
         /^Нравится$/.test(b.getAttribute('aria-label') || ''));
@@ -1277,40 +1494,128 @@ function injectVibePlayerButton() {
     btn.innerHTML = ICONS.downloadSmall;
 
     btn.onclick = async () => {
-        const nameEl = bar.querySelector('[class*="VibePlayerbarMeta_trackNameText"]:not([aria-hidden="true"])')
-            || bar.querySelector('[class*="VibePlayerbarMeta_trackNameText"]');
-        const title = nameEl ? (nameEl.textContent || '').trim() : '';
-        const artistsEl = document.querySelector('[class*="VibeDynamicArtists_root"] [title]');
-        const artistHint = artistsEl ? (artistsEl.getAttribute('title') || artistsEl.textContent || '') : '';
+        const info = getVibeTrackInfo(bar);
+        ymDebugLog('vibe click:', JSON.stringify(info), '| index=' + trackMetaByTitle.size);
 
-        const meta = title ? findMetaForLabel(title) : null;
-        if (!meta) {
-            showToast({
-                title: title || 'Трек',
-                artist: artistHint,
-                statusText: 'Трек ещё не определён — переключите песню вперёд/назад и повторите',
-                progress: 100,
-                state: 'error',
-                duration: 4500
-            });
-            return;
+        btn.disabled = true;
+        try {
+            let meta = null;
+
+            // 1. id прямо из бара (если Яндекс его отдаёт в ссылке)
+            if (info.trackId && info.albumId) {
+                meta = { trackId: info.trackId, albumId: info.albumId, title: info.title || 'Трек' };
+            } else if (info.trackId) {
+                const byId = trackMetaById.get(String(info.trackId));
+                if (byId && byId.albumId) {
+                    meta = { trackId: info.trackId, albumId: String(byId.albumId), title: info.title || byId.title };
+                }
+            }
+
+            // 2. поиск по названию; метаданные текущего трека приходят из сети
+            //    с задержкой — ждём до 2.5 c, прежде чем ругаться
+            if (!meta && info.title) {
+                const found = await waitForTrackMeta(info.title);
+                if (found) {
+                    meta = { trackId: found.trackId, albumId: String(found.albumId), title: info.title || found.title };
+                }
+            }
+
+            // 3. резерв: текущий трек по самому свежему перехваченному file-info
+            //    (спасает, когда бар показывает «трек (slowed)», а API — «трек»)
+            if (!meta) {
+                const viaFileInfo = await resolveVibeMetaFromFileInfo(info.title);
+                if (viaFileInfo) {
+                    meta = {
+                        trackId: viaFileInfo.trackId,
+                        albumId: String(viaFileInfo.albumId),
+                        title: info.title || viaFileInfo.title
+                    };
+                }
+            }
+
+            if (!meta) {
+                showToast({
+                    title: info.title || 'Моя волна',
+                    artist: info.artist,
+                    statusText: info.title
+                        ? `Не удалось определить трек «${info.title}» — подождите пару секунд и повторите`
+                        : 'Включите воспроизведение в «Моей волне» и нажмите ещё раз',
+                    progress: 100,
+                    state: 'error',
+                    duration: 5000
+                });
+                return;
+            }
+
+            await downloadTrackWithMetadata(meta.trackId, meta.albumId, meta.title, btn);
+        } finally {
+            btn.disabled = false;
         }
-        await downloadTrackWithMetadata(meta.trackId, meta.albumId, meta.title, btn);
     };
 
     likeBtn.parentElement.insertBefore(btn, likeBtn.nextSibling);
 }
 
-function injectBatchHeaderButton() {
-    if (document.getElementById('ym-ext-batch-header-btn')) return;
+/* «Скачать всё»: для каких страниц очередь имеет смысл */
+function batchPageKind() {
+    const p = location.pathname;
+    if (/^\/album\/\d+\/?$/.test(p)) return 'album';
+    if (/^\/playlists\//.test(p)) return 'playlist';
+    if (/^\/collection(\/|$)/.test(p)) return 'collection';
+    if (/^\/chart(\/|$)/.test(p)) return 'chart';
+    return null;
+}
 
-    // Look for album or playlist header action buttons
-    const headerActions = document.querySelector('[class*="PageHeader_actions"], [class*="Header_controls"], .page-album__actions, .page-playlist__actions');
-    if (!headerActions) return;
+function findBatchHeaderContainer(kind) {
+    // Селекторы под актуальную вёрстку (08–11.2026): на альбоме — controls
+    // у PageHeaderBase, на плейлисте — InnerHeader_actions, в коллекции —
+    // собственный CollectionPageHeader, в чарте — TextHeader.
+    const preferred = {
+        album: [
+            '[class*="PageHeaderBase_controls"]',
+            '[class*="CommonPageHeader_controls"]',
+            '[class*="PageHeader_actions"]',
+            '[class*="Header_controls"]'
+        ],
+        playlist: [
+            '[class*="InnerHeader_actions"]',
+            '[class*="PageHeaderBase_controls"]',
+            '[class*="PageHeader_actions"]'
+        ],
+        collection: [
+            '[class*="CollectionPageHeader_staticContent"]',
+            '[class*="CollectionPageHeader_root"]'
+        ],
+        chart: [
+            '[class*="TextHeader_staticItem"]',
+            '[class*="TextHeader_container"]'
+        ]
+    }[kind] || [];
+
+    for (const sel of preferred) {
+        const el = document.querySelector(sel);
+        if (el && el.getBoundingClientRect().width > 0) return el;
+    }
+
+    // Запасной вариант: рядом с «Нравится»/«Закрепить» в шапке страницы
+    const likeBtn = document.querySelector('header button[aria-label="Нравится"], [class*="PageHeader"] button[aria-label="Нравится"], [class*="InnerHeader"] button[aria-label="Нравится"], [class*="PageHeader"] button[aria-label="Закрепить"]');
+    if (likeBtn && likeBtn.parentElement) return likeBtn.parentElement;
+    return null;
+}
+
+function injectBatchHeaderButton() {
+    const kind = batchPageKind();
+    const existing = document.getElementById('ym-ext-batch-header-btn');
+    if (existing && existing.dataset.pageKind !== (kind || '')) existing.remove();
+    if (!kind || document.getElementById('ym-ext-batch-header-btn')) return;
+
+    const container = findBatchHeaderContainer(kind);
+    if (!container) return;
 
     const btn = document.createElement('button');
     btn.id = 'ym-ext-batch-header-btn';
-    btn.className = 'ym-ext-batch-header-btn';
+    btn.className = 'ym-ext-batch-header-btn' + (kind === 'collection' || kind === 'chart' ? ' ym-ext-batch-header-btn--plain' : '');
+    btn.dataset.pageKind = kind;
     btn.innerHTML = `
         ${ICONS.downloadSmall}
         <span>Скачать всё</span>
@@ -1320,7 +1625,8 @@ function injectBatchHeaderButton() {
         openBatchDownloadModal();
     };
 
-    headerActions.appendChild(btn);
+    container.appendChild(btn);
+    ymDebugLog('batch button injected:', kind, '->', String(container.className).slice(0, 80));
 }
 
 /* ==========================================================================
