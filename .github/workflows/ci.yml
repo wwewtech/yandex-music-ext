@@ -32,7 +32,8 @@ jobs:
             
             const files = [
               manifest.background.service_worker,
-              ...manifest.content_scripts.flatMap(cs => cs.js),
+              'offscreen.html',
+              ...manifest.content_scripts.flatMap(cs => [...(cs.js || []), ...(cs.css || [])]),
               ...Object.values(manifest.icons)
             ];
             for (const file of files) {
@@ -53,7 +54,9 @@ jobs:
       - name: Package Extension ZIP
         run: |
           mkdir -p dist
-          zip -r dist/yandex-music-downloader.zip manifest.json background.js content.js content.css popup.html popup.css popup.js id3-writer.js md5.js icons LICENSE README.md
+          # Полный список рантайм-файлов расширения — синхронизировать с manifest.json.
+          FILES="manifest.json background.js content.js content.css inject.js id3-writer.js md5.js popup.html popup.css popup.js offscreen.html offscreen.js icons LICENSE README.md"
+          zip -r dist/yandex-music-downloader.zip $FILES
           echo "✓ Built extension package: dist/yandex-music-downloader.zip"
 
       - name: Upload Build Artifact
