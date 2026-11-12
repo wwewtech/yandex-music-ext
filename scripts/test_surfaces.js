@@ -232,6 +232,12 @@ async function main() {
         console.error('FAILED SURFACES:', failed.map((f) => f.name).join(', '));
         process.exit(1);
     }
+    // В CI пропущенные поверхности считаются провалом: иначе зелёный статус
+    // не означает, что все поверхности реально проверены.
+    if (skipped.length && process.env.YM_CI_STRICT === '1') {
+        console.error('SKIPPED SURFACES (strict mode):', skipped.map((s) => s.name).join(', '));
+        process.exit(1);
+    }
 }
 
 main().catch((e) => {

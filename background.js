@@ -15,6 +15,13 @@ const API_HEADERS = {
     'Referer': 'https://music.yandex.ru/'
 };
 
+// GitHub update-check constants.
+const GITHUB_REPO = 'wwewtech/yandex-music-ext';
+const GITHUB_API = `https://api.github.com/repos/${GITHUB_REPO}/releases/latest`;
+const UPDATE_CACHE_KEY = 'ymUpdateInfo';
+const UPDATE_DISMISS_KEY = 'ymUpdateDismissedVersion';
+const UPDATE_CACHE_TTL_MS = 4 * 60 * 60 * 1000; // 4 часа
+
 chrome.runtime.onInstalled.addListener((details) => {
     if (details.reason === 'install') {
         chrome.storage.local.set({
@@ -24,6 +31,12 @@ chrome.runtime.onInstalled.addListener((details) => {
             saveAs: false
         });
     }
+    // При любой установке/обновлении запланировать периодическую проверку обновлений.
+    try {
+        chrome.alarms.clearAll(() => {
+            chrome.alarms.create('ymUpdateCheck', { periodInMinutes: 240 });
+        });
+    } catch (_) {}
 });
 
 function bytesToBase64(bytes) {
@@ -113,6 +126,134 @@ function authedHeaders(token) {
     const h = { ...API_HEADERS };
     if (token) h['Authorization'] = 'OAuth ' + token;
     return h;
+}
+
+/* ==========================================================================
+   v1.5.0: проверка обновлений через GitHub API
+   ========================================================================== */
+
+async function readUpdateCache() {
+    return new Promise((resolve) => {
+        try {
+            chrome.storage.local.get([UPDATE_CACHE_KEY], (items) => {
+                resolve((items && items[UPDATE_CACHE_KEY]) || null);
+            });
+        } catch (_) {
+            resolve(null);
+        }
+    });
+}
+
+async function writeUpdateCache(entry) {
+    return new Promise((resolve) => {
+        try {
+            chrome.storage.local.set({ [UPDATE_CACHE_KEY]: entry }, () => resolve());
+        } catch (_) {
+            resolve();
+        }
+    });
+}
+
+async function readDismissedVersion() {
+    return new Promise((resolve) => {
+        try {
+            chrome.storage.local.get([UPDATE_DISMISS_KEY], (items) => {
+                resolve((items && items[UPDATE_DISMISS_KEY]) || '');
+            });
+        } catch (_) {
+            resolve('');
+        }
+    });
+}
+
+function normalizeVersion(v) {
+    return String(v || '').replace(/^v/, '').trim();
+}
+
+/**
+ * Запрос последнего релиза из GitHub API. GitHub требует без куки
+ * (credentials: omit) и своего User-Agent, поэтому не используем fetchJson.
+ */
+async function fetchGitHubLatest() {
+    const res = await fetch(GITHUB_API, {
+        credentials: 'omit',
+        headers: {
+            Accept: 'application/vnd.github+json',
+            'User-Agent': 'YandexMusicDownloader-extension'
+        }
+    });
+    if (!res.ok) throw new Error(`GitHub API HTTP ${res.status}`);
+    const payload = await res.json();
+    return {
+        tagName: payload.tag_name || '',
+        releaseUrl: payload.html_url || '',
+        releaseNotes: payload.body || '',
+        publishedAt: payload.published_at || ''
+    };
+}
+
+/**
+ * Проверить наличие обновления. Возвращает {latestVersion, releaseUrl,
+ * releaseNotes, checkedAt, error?}. latestVersion без ведущей 'v'.
+ */
+async function checkGitHubUpdate(force = false) {
+    const now = Date.now();
+    if (!force) {
+        const cached = await readUpdateCache();
+        if (cached && cached.latestVersion && cached.checkedAt &&
+            (now - Number(cached.checkedAt)) < UPDATE_CACHE_TTL_MS) {
+            return cached;
+        }
+    }
+    let result;
+    try {
+        const release = await fetchGitHubLatest();
+        const latest = normalizeVersion(release.tagName);
+        result = {
+            latestVersion: latest,
+            releaseUrl: release.releaseUrl,
+            releaseNotes: release.releaseNotes,
+            checkedAt: now,
+            error: null
+        };
+    } catch (err) {
+        result = {
+            latestVersion: '',
+            releaseUrl: '',
+            releaseNotes: '',
+            checkedAt: now,
+            error: String(err && err.message ? err.message : err)
+        };
+    }
+    await writeUpdateCache(result);
+    return result;
+}
+
+/**
+ * Ответ на действие popup get_update_info.
+ * Сравнивает версию манифеста с кэшированной/latest из GitHub.
+ */
+async function getUpdateInfo() {
+    const currentVersion = normalizeVersion(chrome.runtime.getManifest().version);
+    let info = await readUpdateCache();
+    if (!info || info.checkedAt == null ||
+        (Date.now() - Number(info.checkedAt)) >= UPDATE_CACHE_TTL_MS) {
+        info = await checkGitHubUpdate(true);
+    }
+    const latest = normalizeVersion(info.latestVersion || '');
+    const dismissed = await readDismissedVersion();
+    const updateAvailable = Boolean(latest) &&
+        latest !== currentVersion &&
+        normalizeVersion(dismissed) !== latest;
+    return {
+        updateAvailable,
+        currentVersion,
+        latestVersion: latest || info.latestVersion || '',
+        releaseUrl: info.releaseUrl || '',
+        releaseNotes: info.releaseNotes || '',
+        checkedAt: info.checkedAt || 0,
+        error: info.error || null
+    };
 }
 
 /* ---- Offscreen document: единственное место в MV3 с URL.createObjectURL ---- */
@@ -241,7 +382,7 @@ function buildGetMp3Url(xmlOrJson) {
         host = xmlOrJson.match(/<host>(.*?)<\/host>/)?.[1];
         path = xmlOrJson.match(/<path>(.*?)<\/path>/)?.[1];
         ts = xmlOrJson.match(/<ts>(.*?)<\/ts>/)?.[1];
-        s = xmlOrJson.match(/<s>(.*?)<\/s>/)?.[1];
+        s = xmlOrJson.match(/(.*?)<\/s>/)?.[1];
     }
     if (!host || !path || ts == null || s == null || typeof md5 !== 'function') return null;
     const sign = md5(SALT + path.substring(1) + s);
@@ -262,25 +403,26 @@ function pickBestStream(items, preferMp3 = true) {
     return items.sort((a, b) => (b.bitrateInKbps || b.bitrate || 0) - (a.bitrateInKbps || a.bitrate || 0))[0];
 }
 
+async function resolveViaGetFileInfoVariant(trackId, quality, token, variant) {
+    const ts = Math.floor(Date.now() / 1000);
+    const sign = await makeV2Sign(ts, trackId, quality, variant);
+    const url = `https://api.music.yandex.ru/get-file-info?ts=${ts}&trackId=${encodeURIComponent(trackId)}` +
+        `&quality=${encodeURIComponent(quality)}` +
+        `&codecs=${encodeURIComponent(V2_CODECS)}` +
+        `&transports=encraw&sign=${encodeURIComponent(sign)}`;
+
+    const payload = await fetchJson(url, true, token ? { 'Authorization': 'OAuth ' + token } : null);
+    return parseDownloadInfo(payload);
+}
+
 async function resolveViaGetFileInfo(trackId, quality, token) {
     const variants = ['web', 'marshal'];
     let lastError = null;
 
     for (const variant of variants) {
         try {
-            const ts = Math.floor(Date.now() / 1000);
-            const sign = await makeV2Sign(ts, trackId, quality, variant);
-            const url = `https://api.music.yandex.ru/get-file-info?ts=${ts}&trackId=${encodeURIComponent(trackId)}` +
-                `&quality=${encodeURIComponent(quality)}` +
-                `&codecs=${encodeURIComponent(V2_CODECS)}` +
-                `&transports=encraw&sign=${encodeURIComponent(sign)}`;
-
-            const payload = await fetchJson(url, true, token ? { 'Authorization': 'OAuth ' + token } : null);
-            const info = parseDownloadInfo(payload);
+            const info = await resolveViaGetFileInfoVariant(trackId, quality, token, variant);
             if (info) return info;
-
-            const errName = payload?.result?.name || payload?.name || '';
-            lastError = new Error(errName || 'get-file-info: нет downloadInfo');
         } catch (err) {
             lastError = err;
         }
@@ -292,54 +434,53 @@ async function resolveViaGetFileInfo(trackId, quality, token) {
 /**
  * V1: /tracks/{id}/download-info с cookie-авторизацией (+ OAuth-токен, если
  * перехвачен) — отдаёт ПОЛНЫЙ трек (не preview) в виде чистого MP3 без шифрования.
+ * Одна конечная точка (хост .net или .ru).
+ */
+async function resolveViaDownloadInfoAuthedSingle(trackId, token, hostSuffix) {
+    const endpoint = `https://api.music.yandex${hostSuffix}/tracks/${encodeURIComponent(trackId)}/download-info`;
+    const payload = await fetchJson(endpoint, true, authedHeaders(token));
+    const items = Array.isArray(payload) ? payload : (payload.result || []);
+
+    const fullItems = items.filter((i) => i && i.preview !== true);
+    const targetItems = fullItems.length ? fullItems : items;
+    const pick = pickBestStream(targetItems, true);
+    if (!pick?.downloadInfoUrl) return null;
+
+    const sep = pick.downloadInfoUrl.includes('?') ? '&' : '?';
+    const infoText = await fetchText(pick.downloadInfoUrl + sep + 'format=json', true, authedHeaders(token));
+    let parsed;
+    try {
+        parsed = JSON.parse(infoText);
+    } catch (_) {
+        parsed = infoText;
+    }
+    const mp3Url = buildGetMp3Url(parsed);
+    if (!mp3Url) return null;
+
+    return {
+        url: mp3Url,
+        key: null,
+        transport: 'raw',
+        codec: pick.codec || 'mp3',
+        size: 0,
+        bitrate: pick.bitrateInKbps || pick.bitrate || 320,
+        preview: pick.preview === true
+    };
+}
+
+/**
+ * V1 download-info с перебором хостов. Возвращает {info, previewOnly} для
+ * обратной совместимости.
  */
 async function resolveViaDownloadInfoAuthed(trackId, token) {
-    const endpoints = [
-        `https://api.music.yandex.net/tracks/${encodeURIComponent(trackId)}/download-info`,
-        `https://api.music.yandex.ru/tracks/${encodeURIComponent(trackId)}/download-info`
-    ];
     let previewOnly = false;
-
-    for (const endpoint of endpoints) {
+    for (const suffix of ['.net', '.ru']) {
         try {
-            // credentials include: авторизация cookie-сессией music.yandex.ru
-            const payload = await fetchJson(endpoint, true, authedHeaders(token));
-            const items = Array.isArray(payload) ? payload : (payload.result || []);
-
-            // Только превью? Запоминаем, но НЕ прерываем цепочку — полный трек
-            // может быть доступен через get-file-info (так работает веб-плеер).
-            const fullItems = items.filter((i) => i && i.preview !== true);
-            if (fullItems.length === 0 && items.length > 0) {
-                previewOnly = true;
-                continue;
+            const info = await resolveViaDownloadInfoAuthedSingle(trackId, token, suffix);
+            if (info) {
+                if (info.preview) previewOnly = true;
+                return { info, previewOnly };
             }
-
-            const pick = pickBestStream(fullItems.length ? fullItems : items, true);
-            if (!pick?.downloadInfoUrl) continue;
-
-            const sep = pick.downloadInfoUrl.includes('?') ? '&' : '?';
-            const infoText = await fetchText(pick.downloadInfoUrl + sep + 'format=json', true, authedHeaders(token));
-            let parsed;
-            try {
-                parsed = JSON.parse(infoText);
-            } catch (_) {
-                parsed = infoText;
-            }
-            const mp3Url = buildGetMp3Url(parsed);
-            if (!mp3Url) continue;
-
-            return {
-                info: {
-                    url: mp3Url,
-                    key: null,
-                    transport: 'raw',
-                    codec: pick.codec || 'mp3',
-                    size: 0,
-                    bitrate: pick.bitrateInKbps || pick.bitrate || 320,
-                    preview: pick.preview === true
-                },
-                previewOnly
-            };
         } catch (_) {}
     }
     return { info: null, previewOnly };
@@ -375,6 +516,66 @@ async function downloadProcessedAudio(opts) {
     const result = await downloadBytesAsFile(bytesToBase64(bytes), filename, 'application/octet-stream', Boolean(opts.saveAs));
     if (result.error) return { error: result.error };
     return { ...result, size: bytes.length, container, ext };
+}
+
+/**
+ * Упорядоченная цепочка из 10+ стратегий получения ссылки на аудио.
+ * Каждая попытка фиксируется как {strategy, url, error, ok}.
+ * Возвращает {info, attempts} при первой успехе, иначе бросает ошибку
+ * с полным перечнем попыток.
+ */
+async function resolveTrackDownloadStrategies(trackId, signedUrl, token) {
+    const attempts = [];
+
+    const tryStrategy = async (name, url, fn) => {
+        const started = Date.now();
+        try {
+            const info = await fn();
+            if (info && info.url) {
+                attempts.push({ strategy: name, url: info.url || url || '', error: null, ok: true, durationMs: Date.now() - started });
+                return info;
+            }
+            attempts.push({ strategy: name, url: url || '', error: 'пустой результат', ok: false, durationMs: Date.now() - started });
+            return null;
+        } catch (err) {
+            attempts.push({ strategy: name, url: url || '', error: String(err && err.message ? err.message : err), ok: false, durationMs: Date.now() - started });
+            return null;
+        }
+    };
+
+    const strategies = [
+        // 1. Подписанный URL, перехваченный из реального трафика страницы.
+        { name: 'signed-page-url', url: signedUrl || null, run: () => signedUrl ? resolveViaSignedUrl(signedUrl) : Promise.reject(new Error('нет подписанного URL')) },
+        // 2. V1 download-info на .net (авторизация через cookie сессии).
+        { name: 'download-info-dot-net', url: `https://api.music.yandex.net/tracks/${trackId}/download-info`, run: () => resolveViaDownloadInfoAuthedSingle(trackId, token, '.net') },
+        // 3. V1 download-info на .ru (альтернативный хост).
+        { name: 'download-info-dot-ru', url: `https://api.music.yandex.ru/tracks/${trackId}/download-info`, run: () => resolveViaDownloadInfoAuthedSingle(trackId, token, '.ru') },
+        // 4-6. get-file-info nq/hq/lossless — вариант sign 'web'.
+        { name: 'get-file-info-nq-web', url: `https://api.music.yandex.ru/get-file-info?quality=nq`, run: () => resolveViaGetFileInfoVariant(trackId, 'nq', token, 'web') },
+        { name: 'get-file-info-hq-web', url: `https://api.music.yandex.ru/get-file-info?quality=hq`, run: () => resolveViaGetFileInfoVariant(trackId, 'hq', token, 'web') },
+        { name: 'get-file-info-lossless-web', url: `https://api.music.yandex.ru/get-file-info?quality=lossless`, run: () => resolveViaGetFileInfoVariant(trackId, 'lossless', token, 'web') },
+        // 7-9. get-file-info nq/hq/lossless — вариант sign 'marshal'.
+        { name: 'get-file-info-nq-marshal', url: `https://api.music.yandex.ru/get-file-info?quality=nq`, run: () => resolveViaGetFileInfoVariant(trackId, 'nq', token, 'marshal') },
+        { name: 'get-file-info-hq-marshal', url: `https://api.music.yandex.ru/get-file-info?quality=hq`, run: () => resolveViaGetFileInfoVariant(trackId, 'hq', token, 'marshal') },
+        { name: 'get-file-info-lossless-marshal', url: `https://api.music.yandex.ru/get-file-info?quality=lossless`, run: () => resolveViaGetFileInfoVariant(trackId, 'lossless', token, 'marshal') },
+        // 10. get-file-info nq — вариант sign 'web-alt' (альтернативная схема подписи).
+        { name: 'get-file-info-nq-web-alt', url: `https://api.music.yandex.ru/get-file-info?quality=nq`, run: () => resolveViaGetFileInfoVariant(trackId, 'nq', token, 'web-alt') }
+    ];
+
+    for (const s of strategies) {
+        const info = await tryStrategy(s.name, s.url, s.run);
+        if (info) {
+            // ЛогAttempts в консоль service worker для отладки.
+            try {
+                console.log('[ym-ext] resolve_track_download attempts:', JSON.stringify(attempts));
+            } catch (_) {}
+            return { info, attempts };
+        }
+    }
+
+    // Не удалось ни одной стратегией — формируем исчерпывающую ошибку.
+    const failed = attempts.filter(a => !a.ok).map(a => `${a.strategy}: ${a.error}`).join('; ');
+    throw new Error(`Не удалось получить ссылку на трек ни одним из ${attempts.length} способов. ${failed}`);
 }
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
@@ -421,43 +622,27 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         return true;
     }
 
+    if (request.action === 'get_update_info') {
+        (async () => {
+            try {
+                const info = await getUpdateInfo();
+                sendResponse(info);
+            } catch (err) {
+                sendResponse({ error: String(err && err.message ? err.message : err) });
+            }
+        })();
+        return true;
+    }
+
     if (request.action === 'resolve_track_download') {
         (async () => {
             const trackId = String(request.trackId);
             const signedUrl = request.signedUrl || null;
             const token = await getToken(request);
 
-            // 1. Подписанный URL, перехваченный из реального трафика страницы.
-            if (signedUrl) {
-                try {
-                    const fromSigned = await resolveViaSignedUrl(signedUrl);
-                    if (fromSigned) return fromSigned;
-                } catch (_) {}
-            }
-
-            // 2. V1 download-info — авторизация через cookie сессии (токен опционален).
-            //    Отдаёт полный MP3 без шифрования. Если вернул только preview —
-            //    НЕ прерываем: пробуем get-file-info (путь веб-плеера).
-            let sawPreviewOnly = false;
-            const legacy = await resolveViaDownloadInfoAuthed(trackId, token);
-            if (legacy && legacy.info) return legacy.info;
-            if (legacy && legacy.previewOnly) sawPreviewOnly = true;
-
-            // 3. V2 get-file-info с подписью (+ cookie/токен). encraw → AES-CTR расшифровка.
-            for (const quality of ['nq', 'hq', 'lossless']) {
-                try {
-                    const info = await resolveViaGetFileInfo(trackId, quality, token);
-                    if (info) return info;
-                } catch (_) {}
-            }
-
-            if (sawPreviewOnly) {
-                throw new Error('Трек доступен только как 30-секундное превью. Нужна подписка Плюс или повторный вход на music.yandex.ru');
-            }
-
-            throw new Error('Не удалось получить ссылку на трек. Убедитесь, что вы залогинены на music.yandex.ru, затем обновите страницу (Ctrl+F5)');
+            const { info, attempts } = await resolveTrackDownloadStrategies(trackId, signedUrl, token);
+            sendResponse({ info, attempts });
         })()
-            .then(info => sendResponse({ info }))
             .catch(err => sendResponse({ error: err.message || String(err) }));
         return true;
     }
@@ -489,5 +674,25 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             .then(result => sendResponse(result))
             .catch(err => sendResponse({ error: err.message || String(err) }));
         return true;
+    }
+
+    if (request.action === 'check_update') {
+        (async () => {
+            try {
+                const info = await checkGitHubUpdate(true);
+                const currentVersion = normalizeVersion(chrome.runtime.getManifest().version);
+                const latest = normalizeVersion(info.latestVersion || '');
+                sendResponse({ updateAvailable: latest !== currentVersion && !!latest, ...info });
+            } catch (err) {
+                sendResponse({ error: String(err && err.message ? err.message : err) });
+            }
+        })();
+        return true;
+    }
+});
+
+chrome.alarms.onAlarm.addListener((alarm) => {
+    if (alarm && alarm.name === 'ymUpdateCheck') {
+        checkGitHubUpdate(true).catch(() => {});
     }
 });

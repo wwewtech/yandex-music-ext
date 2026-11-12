@@ -267,29 +267,33 @@ function sendBackgroundMessage(payload) {
 
 async function resolveTrackDownload(trackId, albumId, options = {}) {
     const tid = String(trackId);
+    const onAttempt = options.onAttempt || (() => {});
 
     const cached = getCachedFileInfo(tid);
     if (cached && cached.url) {
-        return cached;
+        return { info: cached, attempts: [] };
     }
 
     if (options.forceWarmup) {
         await autoWarmupTrack(trackId, albumId);
         const warmed = getCachedFileInfo(tid);
-        if (warmed && warmed.url) return warmed;
+        if (warmed && warmed.url) return { info: warmed, attempts: [] };
     }
 
     const signedUrl = findSignedGetFileInfoUrl(tid);
     const token = await getYmToken();
 
     try {
-        const { info } = await sendBackgroundMessage({
+        const response = await sendBackgroundMessage({
             action: 'resolve_track_download',
             trackId: String(trackId),
             signedUrl,
             token
         });
-        if (info && info.url) return info;
+        const info = response && response.info ? response.info : null;
+        const attempts = Array.isArray(response && response.attempts) ? response.attempts : [];
+        attempts.forEach((a) => onAttempt(a));
+        if (info && info.url) return { info, attempts };
     } catch (e) {
         if (!options.allowRetry) throw e;
     }
@@ -890,7 +894,19 @@ async function downloadTrackWithMetadata(trackId, albumId, fallbackTitle, btnEle
             toastHandle.update({ newStatus: 'Запрос ссылки через API Яндекса...', newProgress: 30 });
         }
 
-        let downloadInfo = await resolveTrackDownload(trackId, albumId, { allowRetry: true });
+        let downloadResult = await resolveTrackDownload(trackId, albumId, {
+            allowRetry: true,
+            onAttempt: (a) => {
+                if (toastHandle && !a.ok) {
+                    toastHandle.update({
+                        newStatus: `Попытка «${a.strategy}»… (${Math.round(a.progress || 0)}%)`,
+                        newProgress: Math.min(35 + Math.round(a.progress || 0), 50)
+                    });
+                }
+            }
+        });
+        let downloadInfo = downloadResult && downloadResult.info ? downloadResult.info : null;
+        const attempts = Array.isArray(downloadResult && downloadResult.attempts) ? downloadResult.attempts : [];
 
         // Стремимся к lossless: если резолвился не FLAC — просим плеер запросить
         // «Превосходное» качество и берём лучший из доступных вариантов.
