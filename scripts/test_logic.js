@@ -28,30 +28,62 @@ function pickBestStream(items, preferMp3 = true) {
 (async () => {
     const trackId = '153627759';
 
-    // --- 2. preview protection (real API call, no token -> preview:true)
+    // --- 2. preview protection (real API call, no token)
+    // API меняет поведение для анонимов: раньше отдавал 200 с preview:true,
+    // теперь — 403 no-rights. Расширение обязано НЕ качать 30с молча.
     const res = await fetch(`https://api.music.yandex.net/tracks/${trackId}/download-info`, {
         headers: { 'Accept': 'application/json' }
     });
     const payload = await res.json();
-    const items = Array.isArray(payload) ? payload : (payload.result || []);
-    const fullItems = items.filter((i) => i && i.preview !== true);
-    if (fullItems.length === 0 && items.length > 0) {
-        console.log('[OK] preview-protection works: all items are preview:true -> code throws "Трек доступен только как 30-секундное превью"');
+    const items = Array.isArray(payload) ? payload : (Array.isArray(payload.result) ? payload.result : []);
+    const apiMessage = payload && payload.result && payload.result.message;
+
+    if (res.status === 403) {
+        if (!/no-rights|not-allowed/i.test(String(apiMessage))) {
+            console.error('[FAIL] 403 без ожидаемой причины:', JSON.stringify(payload).slice(0, 200));
+            process.exit(1);
+        }
+        console.log(`[OK] preview-protection works: anonymous download-info -> HTTP 403 "${apiMessage}"`);
     } else {
-        console.log('[WARN] unexpected: got non-preview items without auth?', JSON.stringify(fullItems).slice(0, 200));
+        const fullItems = items.filter((i) => i && i.preview !== true);
+        if (fullItems.length === 0 && items.length > 0) {
+            console.log('[OK] preview-protection works: all items are preview:true -> code throws "Трек доступен только как 30-секундное превью"');
+        } else {
+            console.log('[WARN] unexpected: got non-preview items without auth?', JSON.stringify(fullItems).slice(0, 200));
+        }
     }
 
-    // --- 3. get-mp3 URL building (same as buildGetMp3Url)
-    const pick = pickBestStream(items, true);
-    const sep = pick.downloadInfoUrl.includes('?') ? '&' : '?';
-    const infoText = await (await fetch(pick.downloadInfoUrl + sep + 'format=json')).text();
-    const info = JSON.parse(infoText);
+    // --- 3. get-mp3 URL building (same as buildGetMp3Url).
+    // Без сессии элементов нет — тогда подпись собираем на синтетическом
+    // download-info, чтобы проверить сам алгоритм.
+    const pick = pickBestStream(items, true) || {
+        codec: 'mp3', bitrateInKbps: 128,
+        downloadInfoUrl: 'https://example.invalid/download-info'
+    };
+    let info = { host: 'example.invalid', path: '/p/track.mp3', ts: '1', s: 'sig' };
+    if (items.length) {
+        const sep = pick.downloadInfoUrl.includes('?') ? '&' : '?';
+        const infoText = await (await fetch(pick.downloadInfoUrl + sep + 'format=json')).text();
+        info = JSON.parse(infoText);
+        console.log(`[OK] download-info XML/JSON fetched for track ${trackId}`);
+    } else {
+        console.log('[SKIP] нет download-info без авторизации — проверяю только алгоритм подписи');
+    }
+
     const sign = crypto.createHash('md5').update(SALT + info.path.substring(1) + info.s).digest('hex');
     const mp3Url = `https://${info.host}/get-mp3/${sign}/${info.ts}${info.path}`;
-    const audioRes = await fetch(mp3Url);
-    const buf = Buffer.from(await audioRes.arrayBuffer());
-    const approxSec = Math.round((buf.length * 8) / ((pick.bitrateInKbps || 128) * 1000));
-    console.log(`[OK] get-mp3 URL built and fetched: HTTP ${audioRes.status}, ${buf.length} bytes, ~${approxSec}s (preview expected ~30s)`);
+    if (!/^https:\/\/[^/]+\/get-mp3\/[0-9a-f]{32}\/\d+\/.+/.test(mp3Url)) {
+        console.error('[FAIL] get-mp3 URL имеет неверный формат:', mp3Url);
+        process.exit(1);
+    }
+    console.log('[OK] get-mp3 URL собран (md5-подпись 32 hex):', mp3Url);
+
+    if (items.length) {
+        const audioRes = await fetch(mp3Url);
+        const buf = Buffer.from(await audioRes.arrayBuffer());
+        const approxSec = Math.round((buf.length * 8) / ((pick.bitrateInKbps || 128) * 1000));
+        console.log(`[OK] get-mp3 URL built and fetched: HTTP ${audioRes.status}, ${buf.length} bytes, ~${approxSec}s (preview expected ~30s)`);
+    }
 
     console.log('ALL CHECKS DONE');
 })().catch(e => { console.error('FAIL:', e); process.exit(1); });

@@ -226,6 +226,134 @@
         return originalSetHeader.call(this, name, value);
     };
 
+    /* ---- Аннотация строк треков ---------------------------------------- */
+    // Новая (Next.js/RSC) вёрстка не содержит ссылок на треки, а React-пропсы
+    // (fiber) не видны content-скрипту из изолированного мира. Поэтому id
+    // читаем здесь, в MAIN world, и публикуем обычными DOM-атрибутами:
+    // data-ym-track-id / data-ym-album-id / data-ym-title.
+    const ROW_SELECTOR = '[class*="CommonTrack_root"], [class*="TrackPlaylist_track"], [class*="d-track "], .d-track';
+    // Карточки (поиск, блоки «популярное») и плеер: у них тоже есть props.track,
+    // но нет ссылок на трек.
+    const CARD_SELECTOR = '[class*="HorizontalCardContainer_root"], [class*="EntityCard_root"], [class*="CommonTrack_root"]';
+    const PLAYER_SELECTOR = 'section[class*="PlayerBar_root"], [class*="PlayerBar_root__"], [class*="VibePlayerBar_root"]';
+    const MAX_FIBER_DEPTH = 14;
+
+    function trackMetaFromNode(node) {
+        let fiber = null;
+        try {
+            const key = Object.keys(node).find((k) => k.startsWith('__reactFiber$'));
+            fiber = key ? node[key] : null;
+        } catch (_) {
+            return null;
+        }
+        for (let depth = 0; depth < MAX_FIBER_DEPTH && fiber; depth++) {
+            const props = fiber.memoizedProps;
+            if (props && props.track && typeof props.track === 'object') {
+                const track = props.track;
+                const album = Array.isArray(track.albums) && track.albums[0] ? track.albums[0]
+                    : (props.album && typeof props.album === 'object' ? props.album : null);
+                if (track.id != null && album && album.id != null) {
+                    return {
+                        trackId: String(track.id),
+                        albumId: String(album.id),
+                        title: typeof track.title === 'string' ? track.title : ''
+                    };
+                }
+            }
+            fiber = fiber.return;
+        }
+        return null;
+    }
+
+    // Запасной источник: RSC-payload страницы ("name":…, "url":"/album/N/track/M").
+    let rscCache = { ts: 0, byTitle: new Map() };
+    function rscIndex() {
+        if (Date.now() - rscCache.ts < 3000) return rscCache.byTitle;
+        const norm = (t) => String(t || '').toLowerCase()
+            .replace(/[\s\u00a0]+/g, ' ')
+            .replace(/[^\p{L}\p{N} ]/gu, '')
+            .trim();
+        const byTitle = new Map();
+        try {
+            // В RSC-payload слэши экранированы как \u002F и \/ — нормализуем.
+            const html = document.documentElement.innerHTML
+                .replace(/\\u002F/gi, '/')
+                .replace(/\\\//g, '/');
+            const re = /"name":"((?:[^"\\]|\\.)*)"[\s\S]{0,400}?"url":"[^"]*?\/album\/(\d+)\/track\/(\d+)"/g;
+            let m;
+            while ((m = re.exec(html))) {
+                const key = norm(m[1].replace(/\\"/g, '"'));
+                if (key && !byTitle.has(key)) byTitle.set(key, { albumId: m[2], trackId: m[3], title: m[1] });
+            }
+        } catch (_) {}
+        rscCache = { ts: Date.now(), byTitle };
+        return byTitle;
+    }
+
+    function markNode(node, meta) {
+        node.setAttribute('data-ym-track-id', meta.trackId);
+        if (meta.albumId) node.setAttribute('data-ym-album-id', meta.albumId);
+        if (meta.title) node.setAttribute('data-ym-title', meta.title);
+    }
+
+    function annotateRows() {
+        const rows = document.querySelectorAll(ROW_SELECTOR);
+        for (const row of rows) {
+            if (row.getAttribute('data-ym-track-id')) continue;
+
+            const meta = trackMetaFromNode(row);
+            if (meta) {
+                markNode(row, meta);
+                continue;
+            }
+
+            const titleEl = row.querySelector('[class*="Meta_title"], [class*="title"]');
+            const label = row.getAttribute('aria-label') || (titleEl && titleEl.textContent) || '';
+            const norm = String(label).toLowerCase()
+                .replace(/[\s\u00a0]+/g, ' ')
+                .replace(/[^\p{L}\p{N} ]/gu, '')
+                .trim();
+            if (!norm) continue;
+            const byTitle = rscIndex();
+            let hit = byTitle.get(norm);
+            if (!hit) {
+                for (const [k, v] of byTitle) {
+                    if (k.length >= 4 && (norm.includes(k) || k.includes(norm))) { hit = v; break; }
+                }
+            }
+            if (!hit) continue;
+            markNode(row, hit);
+        }
+    }
+
+    // Карточки и плеер: только через props.track (названия неоднозначны).
+    function annotateCards() {
+        document.querySelectorAll(CARD_SELECTOR).forEach((card) => {
+            if (card.getAttribute('data-ym-track-id')) return;
+            const meta = trackMetaFromNode(card);
+            if (meta) markNode(card, meta);
+        });
+
+        // У бара props.track живёт не на самой section, а на вложенном узле
+        // названия — поэтому пробуем и его, и детей с title-классами.
+        document.querySelectorAll(PLAYER_SELECTOR).forEach((bar) => {
+            if (bar.getAttribute('data-ym-track-id')) return;
+            const candidates = [bar];
+            bar.querySelectorAll('[class*="title"], [class*="Title"], [class*="trackName"]').forEach((el) => {
+                if (candidates.length < 8) candidates.push(el);
+            });
+            for (const node of candidates) {
+                const meta = trackMetaFromNode(node);
+                if (meta) { markNode(bar, meta); return; }
+            }
+        });
+    }
+
+    annotateRows();
+    annotateCards();
+    setInterval(() => { annotateRows(); annotateCards(); }, 700);
+    document.addEventListener('ym-ext-rescan', () => { annotateRows(); annotateCards(); });
+
     /* ---- Тихое сохранение файла -------------------------------------- */
     // Скачивание инициируется самой страницей (<a download>), поэтому Chrome
     // НЕ показывает системное уведомление «Загрузка завершена», которое

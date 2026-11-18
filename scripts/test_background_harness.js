@@ -43,7 +43,13 @@ function assert(cond, msg) {
                 onInstalled: { addListener() {} },
                 onMessage: { addListener(fn) { messageHandler = fn; } },
                 sendMessage: () => {},
+                getManifest: () => ({ version: '0.0.0-test' }),
                 lastError: null
+            },
+            alarms: {
+                onAlarm: { addListener() {} },
+                clearAll(cb) { if (cb) cb(); },
+                create() {}
             },
             storage: {
                 local: {

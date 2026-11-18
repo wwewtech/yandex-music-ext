@@ -92,6 +92,19 @@ async function main() {
         return r.result ? r.result.value : undefined;
     };
 
+    // Ждём гидратации. Блоки, грузящиеся по IntersectionObserver (например
+    // «Популярные треки» у исполнителя), требуют прокрутки — но постоянная
+    // прокрутка сбивает уже отрисованный список, поэтому катаем только пока
+    // на странице есть skeleton-заглушки.
+    const snapshot = () => evalPage(`
+        return {
+            ready: document.readyState,
+            rows: document.querySelectorAll('[class*="CommonTrack_root"]').length,
+            injected: document.querySelectorAll('[id^="ym-ext-"], .ym-ext-hover-btn, .ym-ext-list-download-btn').length,
+            skeletons: document.querySelectorAll('[class*="Shimmer"], [class*="Skeleton"]').length
+        };
+    `);
+
     const navigate = async (url) => {
         await cdp.call('Page.navigate', { url });
         const started = Date.now();
@@ -99,20 +112,23 @@ async function main() {
         let stable = 0;
         while (Date.now() - started < WAIT_MS) {
             await sleep(500);
-            const snap = await evalPage(`
-                return {
-                    ready: document.readyState,
-                    rows: document.querySelectorAll('[class*="CommonTrack_root"]').length,
-                    injected: document.querySelectorAll('[id^="ym-ext-"], .ym-ext-hover-btn, .ym-ext-list-download-btn').length
-                };
-            `);
-            const key = JSON.stringify(snap);
-            if (snap && snap.ready !== 'loading') {
-                if (key === prev) stable++; else stable = 0;
-                prev = key;
-                if (stable >= 3) break;
-            }
+            const snap = await snapshot();
+            if (!snap || snap.ready === 'loading') continue;
+
+            const key = JSON.stringify([snap.rows, snap.injected, snap.skeletons]);
+            if (key === prev) stable++; else stable = 0;
+            prev = key;
+
+            // Пока есть скелетоны — подталкиваем вьюпорт вниз.
+            if (snap.skeletons > 0) await evalPage(`window.scrollBy(0, 900); return 1;`);
+
+            if (stable >= 3 && snap.skeletons === 0) break;
         }
+
+        // Виртуализация: у прокрученной страницы в DOM все треки, у
+        // возвращённой наверх — только видимые. Поэтому остаёмся внизу.
+        await evalPage(`window.scrollBy(0, 600); return 1;`);
+        await sleep(900);
     };
 
     const probe = () => evalPage(`
@@ -232,8 +248,9 @@ async function main() {
         console.error('FAILED SURFACES:', failed.map((f) => f.name).join(', '));
         process.exit(1);
     }
-    // В CI пропущенные поверхности считаются провалом: иначе зелёный статус
-    // не означает, что все поверхности реально проверены.
+    // SKIP означает «нет залогиненного профиля» (плейлист/коллекция/виб-бар),
+    // а не поломку — поэтому провалом не считается. Строгий режим доступен
+    // через YM_CI_STRICT=1.
     if (skipped.length && process.env.YM_CI_STRICT === '1') {
         console.error('SKIPPED SURFACES (strict mode):', skipped.map((s) => s.name).join(', '));
         process.exit(1);

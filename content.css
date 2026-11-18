@@ -3,6 +3,22 @@
    ========================================================================== */
 
 /* Player Bar Download Button */
+/* Сам бар — static, поэтому z-index кнопки не выходит из его контекста.
+   Поднимаем бар над контентом. */
+section[class*="PlayerBarMobile_root"],
+section[class*="PlayerBarDesktop"],
+section[class*="PlayerBar_root"],
+section[class*="VibePlayerBar"] {
+  position: relative !important;
+  z-index: 900 !important;
+}
+
+/* Фиксированная обёртка плеера имеет свой z-index (400) и образует контекст
+   наложения — без подъёма самой обёртки кнопка остаётся под контентом. */
+[class*="compositePlayerBar"] {
+  z-index: 900 !important;
+}
+
 #ym-ext-download-btn {
   display: inline-flex !important;
   align-items: center !important;
@@ -17,6 +33,10 @@
   margin: 0 6px !important;
   padding: 0 !important;
   position: relative !important;
+  /* Плеер (z-index:300) перекрывается контентом страницы, а его дети имеют
+     z-index:auto. Явный z-index держит кнопку кликабельной. */
+  z-index: 400 !important;
+  pointer-events: auto !important;
   transition: transform 120ms cubic-bezier(0.16, 1, 0.3, 1), 
               background-color 150ms ease,
               color 150ms ease !important;

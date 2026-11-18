@@ -573,9 +573,28 @@ async function resolveTrackDownloadStrategies(trackId, signedUrl, token) {
         }
     }
 
-    // Не удалось ни одной стратегией — формируем исчерпывающую ошибку.
-    const failed = attempts.filter(a => !a.ok).map(a => `${a.strategy}: ${a.error}`).join('; ');
-    throw new Error(`Не удалось получить ссылку на трек ни одним из ${attempts.length} способов. ${failed}`);
+    // Не удалось ни одной стратегией — формируем ошибку.
+    const failed = attempts.filter(a => !a.ok);
+
+    // Диагностика причины: 403/no-rights/not-allowed от API говорят, что у
+    // запроса нет доступа к полному треку (не залогинены / нет Плюса /
+    // только превью). «Нейтральные» сбои (нет подписанного URL со страницы,
+    // пустой результат) не опровергают эту версию. Любая иная ошибка
+    // (сеть, 5xx и т.п.) — верим сырой диагностике.
+    const isAuthError = (e) => /HTTP 403|no-rights|not-allowed|превью/i.test(e);
+    const isNeutralError = (e) => !e || /нет подписанного URL|пустой результат/i.test(e);
+    const authBlocked = failed.length > 0
+        && failed.some(a => isAuthError(String(a.error || '')))
+        && failed.every(a => isAuthError(String(a.error || '')) || isNeutralError(String(a.error || '')));
+
+    if (authBlocked) {
+        throw new Error('Не удалось получить ссылку на трек: доступ запрещён (403). '
+            + 'Трек доступен только как 30-секундное превью либо нужна подписка Плюс. '
+            + 'Убедитесь, что вы залогинены на music.yandex.ru, запустите воспроизведение и попробуйте снова.');
+    }
+
+    const dump = failed.map(a => `${a.strategy}: ${a.error}`).join('; ');
+    throw new Error(`Не удалось получить ссылку на трек ни одним из ${attempts.length} способов. ${dump}`);
 }
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {

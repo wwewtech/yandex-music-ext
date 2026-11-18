@@ -77,13 +77,22 @@ git clone https://github.com/wwewtech/yandex-music-ext.git
 node --check background.js content.js popup.js
 ```
 
+Офлайн-тесты (браузер не нужен; тегирование требует `ffmpeg`):
+```bash
+node scripts/test_background_harness.js   # обработчики фонового воркера
+node scripts/test_logic.js                # защита от превью + подпись get-mp3
+node scripts/test_mp3_tagging.js          # ID3v2.3: кадры, границы, целостность аудио
+node scripts/test_audio_integrity.js      # M4A: PCM бит-в-бит, offset'ы, ffmpeg
+```
+
 Регресс-проверка покрытия кнопок на живом сайте (нужен Edge/Chromium с расширением и `--remote-debugging-port=9223`):
 ```bash
 node scripts/test_surfaces.js
 ```
 
 В GitHub Actions тот же скрипт прогоняется в Chrome через CDP по всем 8 поверхностям.
-В строгом режиме прогон падает при пропущенных поверхностях:
+Пропуски (`SKIP`) означают «нужен залогиненный профиль» и провалом не считаются;
+в строгом режиме прогон падает и на них:
 ```bash
 YM_CI_STRICT=1 YM_CDP_PORT=9223 node scripts/test_surfaces.js
 ```

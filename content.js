@@ -907,6 +907,7 @@ async function downloadTrackWithMetadata(trackId, albumId, fallbackTitle, btnEle
         });
         let downloadInfo = downloadResult && downloadResult.info ? downloadResult.info : null;
         const attempts = Array.isArray(downloadResult && downloadResult.attempts) ? downloadResult.attempts : [];
+        ymDebugLog('resolve result:', JSON.stringify(downloadInfo), '| attempts:', JSON.stringify(attempts.map(a => a.strategy + (a.ok ? ':OK' : ':fail'))));
 
         // Стремимся к lossless: если резолвился не FLAC — просим плеер запросить
         // «Превосходное» качество и берём лучший из доступных вариантов.
@@ -951,6 +952,7 @@ async function downloadTrackWithMetadata(trackId, albumId, fallbackTitle, btnEle
         const ext = fetched.ext || 'mp3';
         const decodedSec = await getAudioDurationSeconds(audioBuffer);
 
+        ymDebugLog('dl: bytes=' + audioBuffer.byteLength + ' decoded=' + decodedSec + ' dur=' + durationMs + ' codec=' + downloadInfo.codec + ' size=' + downloadInfo.size + ' transport=' + downloadInfo.transport);
         if (isLikelyPreviewByDuration(decodedSec, durationMs)) {
             throw new Error('Получен только превью-фрагмент (~30с). Попробуйте нажать Play и скачать снова.');
         }
@@ -1095,7 +1097,15 @@ async function downloadTrackWithMetadata(trackId, albumId, fallbackTitle, btnEle
    ========================================================================== */
 
 function getCurrentPlayingTrackInfo() {
-    const playerArea = document.querySelector('[class*="PlayerBar"]') || document.querySelector('[class*="player"]') || document.body;
+    const bar = document.querySelector('section[class*="PlayerBar_root"], [class*="PlayerBar_root__"], [class*="VibePlayerBar_root"]')
+        || document.querySelector('[class*="PlayerBar"]');
+
+    const fromAnnotation = bar ? trackMetaForRow(bar) : null;
+    if (fromAnnotation && fromAnnotation.trackId) {
+        return { ...fromAnnotation, artist: '', coverUrl: '' };
+    }
+
+    const playerArea = bar || document.querySelector('[class*="player"]') || document.body;
     const trackLinks = Array.from(playerArea.querySelectorAll('a[href*="/album/"][href*="/track/"]'));
     
     const trackLink = trackLinks.find(a => {
@@ -1126,24 +1136,38 @@ function getCurrentPlayingTrackInfo() {
     return { trackId, albumId, title, artist, coverUrl };
 }
 
+// Актуальная разметка плеера: секция PlayerBar_root__* (мобильная и
+// десктопная), внутри — блок кнопок. Старые селекторы оставлены фолбэком.
+function findPlayerInsertTarget() {
+    const bar = document.querySelector('section[class*="PlayerBar_root"], [class*="PlayerBar_root__"], [class*="PlayerBarDesktop_root"]')
+        || document.querySelector('[class*="PlayerBar"] [class*="sonata"]');
+
+    if (bar) {
+        // Блок кнопок плеера: сначала кнопка «Воспроизведение/Пауза», затем
+        // любой *Buttons*-контейнер, иначе — сам бар.
+        const playBtn = bar.querySelector('button[aria-label*="Воспроизведение"], button[aria-label*="Пауза"]');
+        if (playBtn && playBtn.parentElement) return { container: playBtn.parentElement, method: 'append' };
+
+        const buttonsBox = bar.querySelector('[class*="infoButtons"], [class*="buttonsBar"], [class*="ControlsBar_controls"]');
+        if (buttonsBox) return { container: buttonsBox, method: 'append' };
+
+        return { container: bar, method: 'append' };
+    }
+
+    const likeBtn = document.querySelector('[class*="PlayerBar"] button[aria-label="Мне нравится"], [class*="PlayerBar"] button[title="Мне нравится"]');
+    if (likeBtn && likeBtn.parentNode) return { container: likeBtn, method: 'after' };
+
+    return null;
+}
+
 function injectDownloadButton() {
     if (document.getElementById('ym-ext-download-btn')) return;
 
-    let targetContainer = null;
-    let insertMethod = 'append';
+    const target = findPlayerInsertTarget();
+    if (!target) return;
 
-    targetContainer = document.querySelector('.PlayerBarDesktopWithBackgroundProgressBar_sonata__mGFb_') || 
-                      document.querySelector('[class*="PlayerBar"] [class*="sonata"]');
-                      
-    if (!targetContainer) {
-        const likeBtn = document.querySelector('[class*="Player"] button[aria-label="Мне нравится"], [class*="Player"] button[title="Мне нравится"], [class*="player"] button[aria-label="Like"]');
-        if (likeBtn && likeBtn.parentNode) {
-            targetContainer = likeBtn;
-            insertMethod = 'after';
-        }
-    }
-    
-    if (!targetContainer) return;
+    const targetContainer = target.container;
+    const insertMethod = target.method;
 
     const btn = document.createElement('button');
     btn.id = 'ym-ext-download-btn';
@@ -1152,7 +1176,9 @@ function injectDownloadButton() {
     btn.innerHTML = ICONS.download;
 
     btn.onclick = async () => {
+        ymDebugLog('player btn clicked');
         const info = getCurrentPlayingTrackInfo();
+        ymDebugLog('player info:', JSON.stringify(info));
         if (!info) {
             showToast({
                 title: "Нет активного трека",
@@ -1174,6 +1200,116 @@ function injectDownloadButton() {
     }
 }
 
+/* ---- Определение трека у строки ----------------------------------------
+ * Новая (Next.js/RSC) вёрстка Яндекса убрала <a href> у треков: в DOM нет ни
+ * ссылок, ни trackId, только aria-label с названием. Поэтому источники идут
+ * по надёжности:
+ *   1) ссылка на трек (старая разметка и часть поверхностей);
+ *   2) props.track из React fiber узла — id/album живут в пропсах компонента;
+ *   3) индекс названий из RSC-полезной нагрузки страницы (HTML).
+ * ---------------------------------------------------------------------- */
+const TRACK_HREF_RE = /\/album\/(\d+)\/track\/(\d+)/;
+
+function trackMetaFromHref(href) {
+    const m = String(href || '').match(TRACK_HREF_RE);
+    return m ? { albumId: m[1], trackId: m[2] } : null;
+}
+
+function trackMetaFromReactNode(node) {
+    if (!node || typeof node !== 'object') return null;
+    let key = null;
+    try {
+        key = Object.keys(node).find((k) => k.startsWith('__reactFiber$') || k.startsWith('__reactProps$'));
+    } catch (_) {
+        return null;
+    }
+    if (!key) return null;
+
+    const direct = node[key];
+    const firstFiber = key.startsWith('__reactProps$') ? { memoizedProps: direct } : direct;
+    let fiber = firstFiber;
+    for (let depth = 0; depth < 14 && fiber; depth++) {
+        const p = fiber.memoizedProps;
+        if (p && p.track && typeof p.track === 'object') {
+            const t = p.track;
+            const album = Array.isArray(t.albums) && t.albums[0] ? t.albums[0]
+                : (p.album && typeof p.album === 'object' ? p.album : null);
+            if (t.id != null && album && album.id != null) {
+                return {
+                    trackId: String(t.id),
+                    albumId: String(album.id),
+                    title: typeof t.title === 'string' ? t.title : ''
+                };
+            }
+        }
+        fiber = fiber.return;
+    }
+    return null;
+}
+
+let rscIndexCache = { ts: 0, byTitle: new Map() };
+
+// Название -> ids из RSC-payload. Кэш на 3с: страница перерисовывается часто.
+function getRscTrackIndex() {
+    if (Date.now() - rscIndexCache.ts < 3000) return rscIndexCache.byTitle;
+    const byTitle = new Map();
+    try {
+        // В RSC-payload слэши экранированы как \u002F и \/ — нормализуем.
+        const html = document.documentElement.innerHTML
+            .replace(/\\u002F/gi, '/')
+            .replace(/\\\//g, '/');
+        const re = /"name":"((?:[^"\\]|\\.)*)"[\s\S]{0,400}?"url":"[^"]*?\/album\/(\d+)\/track\/(\d+)"/g;
+        let m;
+        while ((m = re.exec(html))) {
+            const title = m[1].replace(/\\"/g, '"');
+            const key = normalizeTitle(title);
+            if (key && !byTitle.has(key)) byTitle.set(key, { albumId: m[2], trackId: m[3], title });
+        }
+    } catch (_) {}
+    rscIndexCache = { ts: Date.now(), byTitle };
+    return byTitle;
+}
+
+function trackMetaFromRsc(label) {
+    const key = normalizeTitle(label);
+    if (!key || key.length < 3) return null;
+    const byTitle = getRscTrackIndex();
+    const exact = byTitle.get(key);
+    if (exact) return exact;
+    for (const [k, v] of byTitle) {
+        if (k.length >= 4 && (key.includes(k) || k.includes(key))) return v;
+    }
+    return null;
+}
+
+/** Единая точка: ids трека для строки/карточки или null. */
+function trackMetaForRow(row) {
+    if (!row) return null;
+
+    const link = row.querySelector('a[href*="/album/"][href*="/track/"], a[href*="/track/"]');
+    if (link) {
+        const fromHref = trackMetaFromHref(link.getAttribute('href'));
+        if (fromHref) return { ...fromHref, title: link.textContent.trim() };
+    }
+
+    // Аннотации ставит inject.js в MAIN world (fiber ему виден, нам — нет).
+    const annotatedId = row.getAttribute('data-ym-track-id');
+    if (annotatedId) {
+        return {
+            trackId: annotatedId,
+            albumId: row.getAttribute('data-ym-album-id') || '',
+            title: row.getAttribute('data-ym-title') || ''
+        };
+    }
+
+    const fromFiber = trackMetaFromReactNode(row);
+    if (fromFiber) return fromFiber;
+
+    const titleEl = row.querySelector('[class*="Meta_title"], [class*="title"]');
+    const label = row.getAttribute('aria-label') || (titleEl && titleEl.textContent) || '';
+    return trackMetaFromRsc(label);
+}
+
 function injectListDownloadButtons() {
     const trackRows = document.querySelectorAll('[class*="CommonTrack_root"], [class*="TrackPlaylist_track"], [class*="d-track "], .d-track');
 
@@ -1183,14 +1319,11 @@ function injectListDownloadButtons() {
         const controlsBar = row.querySelector('[class*="CommonControlsBar_controls"], [class*="TrackPlaylist_controlsBarCell"], .d-track__actions');
         if (!controlsBar) return;
 
-        const trackLink = row.querySelector('a[href*="/album/"][href*="/track/"]');
-        if (!trackLink) return;
+        const meta = trackMetaForRow(row);
+        if (!meta) return;
 
-        const match = trackLink.getAttribute('href').match(/\/album\/(\d+)\/track\/(\d+)/);
-        if (!match) return;
-
-        const albumId = match[1];
-        const trackId = match[2];
+        const albumId = meta.albumId;
+        const trackId = meta.trackId;
 
         const btn = document.createElement('button');
         btn.className = 'ym-ext-list-download-btn';
@@ -1201,7 +1334,7 @@ function injectListDownloadButtons() {
         btn.onclick = async (e) => {
             e.preventDefault();
             e.stopPropagation();
-            const trackTitle = trackLink.textContent.trim() || row.getAttribute('aria-label') || 'Трек';
+            const trackTitle = meta.title || row.getAttribute('aria-label') || 'Трек';
             await downloadTrackWithMetadata(trackId, albumId, trackTitle, btn);
         };
 
@@ -1425,26 +1558,63 @@ async function waitForTrackMeta(label, timeoutMs = 2500) {
 }
 
 let lastMetaScan = 0;
+const PLAYER_BAR_SEL = '[class*="PlayerBar_root"], [class*="VibePlayerBar_root"]';
+
+function insidePlayerBar(el) {
+    return !!(el && el.closest && el.closest(PLAYER_BAR_SEL));
+}
+
 function injectMetaButtons() {
     const now = Date.now();
     if (now - lastMetaScan < 1500) return;
     lastMetaScan = now;
-    if (trackMetaByTitle.size === 0) return;
+    ymDebugLog('injectMetaButtons: start');
 
-    // Фолбэк для карточек без ссылок на трек: цепляемся за aria-label/title,
-    // совпадающий с названием известного трека из API-ответов.
-    document.querySelectorAll('[aria-label], [title]').forEach(el => {
-        if (el.closest('.ym-ext-row-host')) return;
-        if (el.closest('[class*="PlayerBar"], [class*="VibePlayerBar"], [class*="Navbar"], [class*="Sidebar"]')) return;
-        if (el.querySelector('.ym-ext-hover-btn')) return;
-        const label = el.getAttribute('aria-label') || el.getAttribute('title') || '';
-        if (label.length < 3 || label.length > 120) return;
-        const meta = findMetaForLabel(label);
+    // Строки треков без ссылок: ids берём из React-пропсов или RSC-индекса.
+    const rows = document.querySelectorAll(
+        '[class*="CommonTrack_root"], [class*="TrackPlaylist_track"], [class*="d-track "], .d-track'
+    );
+    rows.forEach((row) => {
+        if (row.querySelector('.ym-ext-list-download-btn, .ym-ext-hover-btn')) return;
+        if (insidePlayerBar(row)) return;
+        const rect = row.getBoundingClientRect();
+        if (rect.height < 20 || rect.height > 260) return;
+        const meta = trackMetaForRow(row);
         if (!meta) return;
-        const rect = el.getBoundingClientRect();
-        if (rect.height < 20 || rect.height > 260 || rect.width > 900) return;
-        attachHoverButton(el, meta);
+        attachHoverButton(row, meta);
     });
+
+    // Карточки (поиск, «популярное», блоки) — без ссылок и без controlsBar:
+    // ставим hover-кнопку на саму карточку.
+    const cards = document.querySelectorAll(
+        '[class*="HorizontalCardContainer_root"], [class*="EntityCard_root"]'
+    );
+    cards.forEach((card) => {
+        if (card.querySelector('.ym-ext-hover-btn, .ym-ext-list-download-btn')) return;
+        if (insidePlayerBar(card)) return;
+        const meta = trackMetaForRow(card);
+        if (!meta || !meta.trackId) return;
+        const rect = card.getBoundingClientRect();
+        if (rect.height < 20 || rect.height > 400) return;
+        attachHoverButton(card, meta);
+    });
+    ymDebugLog('injectMetaButtons: done, cards=' + cards.length + ', hover=' + document.querySelectorAll('.ym-ext-hover-btn').length);
+
+    // Карточки/иные узлы по aria-label — только если есть сетевой индекс.
+    if (trackMetaByTitle.size > 0) {
+        document.querySelectorAll('[aria-label], [title]').forEach(el => {
+            if (el.closest('.ym-ext-row-host')) return;
+            if (insidePlayerBar(el) || el.closest('[class*="Navbar"], [class*="Sidebar"]')) return;
+            if (el.querySelector('.ym-ext-hover-btn')) return;
+            const label = el.getAttribute('aria-label') || el.getAttribute('title') || '';
+            if (label.length < 3 || label.length > 120) return;
+            const meta = findMetaForLabel(label);
+            if (!meta) return;
+            const rect = el.getBoundingClientRect();
+            if (rect.height < 20 || rect.height > 260 || rect.width > 900) return;
+            attachHoverButton(el, meta);
+        });
+    }
 }
 
 // Кнопка скачивания в плеере «Моей волны» (VibePlayerBar)
@@ -1656,17 +1826,14 @@ function openBatchDownloadModal() {
     const trackItems = [];
 
     trackRows.forEach(row => {
-        const link = row.querySelector('a[href*="/album/"][href*="/track/"]');
-        if (link) {
-            const match = link.getAttribute('href').match(/\/album\/(\d+)\/track\/(\d+)/);
-            if (match) {
-                trackItems.push({
-                    albumId: match[1],
-                    trackId: match[2],
-                    title: link.textContent.trim() || 'Трек'
-                });
-            }
-        }
+        const meta = trackMetaForRow(row);
+        if (!meta) return;
+        if (trackItems.some((x) => x.trackId === meta.trackId)) return;
+        trackItems.push({
+            albumId: meta.albumId,
+            trackId: meta.trackId,
+            title: meta.title || row.getAttribute('aria-label') || 'Трек'
+        });
     });
 
     if (trackItems.length === 0) {
