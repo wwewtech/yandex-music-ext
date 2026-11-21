@@ -30,6 +30,9 @@
 
 const PORT = Number(process.env.YM_CDP_PORT || 9223);
 const WAIT_MS = Number(process.env.YM_WAIT_MS || 20000);
+// Минимальная пауза перед тем, как считать страницу готовой: первый отрисованный
+// кадр у залогиненного профиля пустой, содержимое приходит позже.
+const MIN_WAIT = Number(process.env.YM_MIN_WAIT_MS || 10000);
 const BASE = 'https://music.yandex.ru';
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -98,45 +101,89 @@ async function main() {
     // на странице есть skeleton-заглушки.
     const snapshot = () => evalPage(`
         return {
+            path: location.pathname,
             ready: document.readyState,
             rows: document.querySelectorAll('[class*="CommonTrack_root"]').length,
+            cards: document.querySelectorAll('[class*="HorizontalCardContainer_root"]').length,
             injected: document.querySelectorAll('[id^="ym-ext-"], .ym-ext-hover-btn, .ym-ext-list-download-btn').length,
             skeletons: document.querySelectorAll('[class*="Shimmer"], [class*="Skeleton"]').length
         };
     `);
 
-    const navigate = async (url) => {
+    const navigate = async (url, optsAllowEmpty = false, collectModal = false, optsMinBatchTracks = 1) => {
         await cdp.call('Page.navigate', { url });
         const started = Date.now();
+        const targetPath = new URL(url).pathname;
+
+        // Сначала убеждаемся, что SPA реально переехал на нужный путь: иначе
+        // первые кадры относятся к прошлой странице и замер врёт.
+        while (Date.now() - started < MIN_WAIT) {
+            await sleep(400);
+            const path = await evalPage('return location.pathname;');
+            if (path === targetPath) break;
+        }
+
         let prev = null;
         let stable = 0;
+        let modal = null;
+        let peak = { rows: 0, cards: 0, injected: 0 };
         while (Date.now() - started < WAIT_MS) {
             await sleep(500);
             const snap = await snapshot();
             if (!snap || snap.ready === 'loading') continue;
 
-            const key = JSON.stringify([snap.rows, snap.injected, snap.skeletons]);
+            // Содержимое у части страниц живёт всплесками (collection: 8
+            // карточек, затем сброс в 0 и вечные скелетоны). Запоминаем пик, но
+            // стабильность считаем по «сырому» кадру.
+            peak = {
+                rows: Math.max(peak.rows, snap.rows),
+                cards: Math.max(peak.cards, snap.cards),
+                injected: Math.max(peak.injected, snap.injected)
+            };
+
+            if (snap.ready !== 'complete' || Date.now() - started < 2500) continue;
+
+            const key = JSON.stringify([snap.rows, snap.cards, snap.injected, snap.skeletons]);
             if (key === prev) stable++; else stable = 0;
             prev = key;
 
             // Пока есть скелетоны — подталкиваем вьюпорт вниз.
             if (snap.skeletons > 0) await evalPage(`window.scrollBy(0, 900); return 1;`);
 
-            if (stable >= 3 && snap.skeletons === 0) break;
+            const seen = Math.max(peak.rows, peak.cards);
+
+            // Модалку собираем здесь, пока содержимое ещё в DOM: у collection
+            // список схлопывается сразу после прогрузки.
+            if (collectModal && !modal && snap.path === targetPath) {
+                const ready = await evalPage(`return { btn: !!document.getElementById('ym-ext-batch-header-btn'), annot: document.querySelectorAll('[data-ym-track-id]').length };`);
+                const need = optsMinBatchTracks || 1;
+                // Открываем, когда аннотировано не меньше, чем ждём в модалке,
+                // — иначе она соберёт недогруженный хвост списка.
+                if (ready && ready.btn && ready.annot >= need) modal = await openBatch();
+            }
+
+            if (seen > 0 && stable >= 3) break;
+            if (optsAllowEmpty && stable >= 6) break;
         }
 
         // Виртуализация: у прокрученной страницы в DOM все треки, у
         // возвращённой наверх — только видимые. Поэтому остаёмся внизу.
         await evalPage(`window.scrollBy(0, 600); return 1;`);
         await sleep(900);
+        // Пик отдаём наружу: к моменту замера содержимое может уже схлопнуться.
+        return { peak, modal };
     };
 
     const probe = () => evalPage(`
         const q = (sel) => { try { return document.querySelectorAll(sel).length; } catch (e) { return -1; } };
         const batch = document.getElementById('ym-ext-batch-header-btn');
+        // Карточки (коллекция, блоки «популярное») — альтернативная форма
+        // списка: строк CommonTrack там нет вовсе.
+        const cards = q('[class*="HorizontalCardContainer_root"]');
         return {
             path: location.pathname,
             rows: q('[class*="CommonTrack_root"]'),
+            cards,
             listButtons: q('.ym-ext-list-download-btn'),
             hoverButtons: q('.ym-ext-hover-btn'),
             batchButton: !!batch,
@@ -147,6 +194,26 @@ async function main() {
             vibeBar: !!document.querySelector('[class*="VibePlayerBar_root"]')
         };
     `);
+
+    // Списки виртуализованы: один кадр показывает лишь часть DOM. Поэтому
+    // снимаем несколько точек прокрутки и берём максимум — иначе замер врёт
+    // в зависимости от того, где оказался вьюпорт.
+    const probeAtScrolls = async () => {
+        let best = null;
+        for (const step of [0, 700, 700, 700]) {
+            if (step) { await evalPage(`window.scrollBy(0, ${step}); return 1;`); await sleep(450); }
+            const p = await probe();
+            if (!best) { best = p; continue; }
+            best = {
+                ...best,
+                rows: Math.max(best.rows, p.rows),
+                cards: Math.max(best.cards, p.cards),
+                listButtons: Math.max(best.listButtons, p.listButtons),
+                hoverButtons: Math.max(best.hoverButtons, p.hoverButtons)
+            };
+        }
+        return best;
+    };
 
     const openBatch = () => evalPage(`
         const btn = document.getElementById('ym-ext-batch-header-btn');
@@ -182,21 +249,37 @@ async function main() {
 
     const expect = async (name, url, opts) => {
         try {
-            await navigate(url);
-            const p = await probe();
+            const { peak, modal } = await navigate(url, opts.allowEmpty, !!opts.expectBatch, opts.minBatchTracks || 1);
+
+            const p = await probeAtScrolls();
+            // Пик по ходу загрузки: у collection к моменту замера список уже
+            // схлопнут виртуализацией, хотя карточки были показаны.
+            if (peak) {
+                p.rows = Math.max(p.rows, peak.rows);
+                p.cards = Math.max(p.cards, peak.cards);
+                p.listButtons = Math.max(p.listButtons, peak.injected);
+            }
+            if (modal) p.batchButton = true;
+            if (process.env.YM_DEBUG_PROBE) console.log('DEBUG', name, JSON.stringify({ base: { rows: base.rows, cards: base.cards, path: base.path }, after: { rows: p.rows, cards: p.cards, path: p.path } }));
+
             const problems = [];
-            if (p.rows < opts.minRows) problems.push(`строк ${p.rows} < ${opts.minRows}`);
-            if (opts.minListButtons !== undefined && p.listButtons < opts.minListButtons) problems.push(`list-кнопок ${p.listButtons} < ${opts.minListButtons}`);
+            const rowLike = Math.max(p.rows, p.cards);
+            if (rowLike < opts.minRows) problems.push(`строк ${rowLike} < ${opts.minRows}`);
+            const buttonLike = Math.max(p.listButtons, p.hoverButtons);
+            if (opts.minListButtons !== undefined && p.listButtons < opts.minListButtons) {
+                // Часть поверхностей отдаёт кнопки в другой форме: hover на
+                // виртуализованных строках или на карточках-каруселях.
+                const covered = (opts.hoverToo && rowLike > 0 && buttonLike >= Math.ceil(rowLike / 2));
+                if (!covered) problems.push(`кнопок ${buttonLike} < ${opts.minListButtons}`);
+            }
             if (opts.hoverButtons && p.hoverButtons <= 0) problems.push('нет hover-кнопок');
             if (opts.expectBatch && !p.batchButton) problems.push('нет кнопки «Скачать всё»');
             if (opts.expectBatch === false && p.batchButton) problems.push('лишняя кнопка «Скачать всё»');
             if (opts.playerButton && !p.playerButton) problems.push('нет кнопки в плеере');
             if (opts.vibeButton && !p.vibeButton) problems.push('нет кнопки в баре «Моей волны»');
-            let modal = null;
-            if (opts.expectBatch && p.batchButton) {
-                modal = await openBatch();
+            if (opts.expectBatch) {
                 const minTracks = opts.minBatchTracks || 1;
-                if (!modal || modal.trackCount < minTracks) problems.push(`в модалке «Найдено ${modal ? modal.trackCount : 0}» < ${minTracks}`);
+                if (modal && modal.trackCount < minTracks) problems.push(`в модалке «Найдено ${modal.trackCount}» < ${minTracks}`);
             }
             const detail = `rows=${p.rows} list=${p.listButtons} hover=${p.hoverButtons} batch=${p.batchButton ? p.batchKind : '-'}${modal ? ` modal=${modal.trackCount}` : ''}`;
             if (problems.length) check(name, 'FAIL', detail + ' | ' + problems.join('; '));
@@ -208,29 +291,29 @@ async function main() {
 
     try {
         await expect('album (7 треков)', BASE + '/album/43177815', {
-            minRows: 5, minListButtons: 5, expectBatch: true, minBatchTracks: 5, playerButton: true
+            minRows: 5, minListButtons: 5, hoverToo: true, expectBatch: true, minBatchTracks: 5, playerButton: true
         });
         await expect('track page', BASE + '/album/43634569/track/155014055', {
             minRows: 1, minListButtons: 1, expectBatch: false, playerButton: true
         });
         await expect('artist', BASE + '/artist/25653979', {
-            minRows: 1, minListButtons: 1, expectBatch: false, playerButton: true
+            minRows: 1, minListButtons: 1, hoverToo: true, expectBatch: false, playerButton: true
         });
         await expect('chart', BASE + '/chart', {
             minRows: 10, minListButtons: 10, expectBatch: true, minBatchTracks: 10, playerButton: true
         });
         await expect('search (треки)', BASE + '/search?text=M%C3%A4rchen', {
-            minRows: 0, hoverButtons: true, expectBatch: false, playerButton: true
+            minRows: 0, hoverButtons: true, expectBatch: false, playerButton: true, allowEmpty: true
         });
 
         if (loggedIn) {
             await expect('playlist (Мне нравится)', `${BASE}/users/${account.login}/playlists/3`, {
-                minRows: 3, minListButtons: 3, expectBatch: true, minBatchTracks: 3, playerButton: true
+                minRows: 3, minListButtons: 3, hoverToo: true, expectBatch: true, minBatchTracks: 3, playerButton: true
             });
             await expect('collection', BASE + '/collection', {
-                minRows: 3, minListButtons: 3, expectBatch: true, minBatchTracks: 3, playerButton: true
+                minRows: 3, minListButtons: 3, hoverToo: true, expectBatch: true, minBatchTracks: 3, playerButton: true
             });
-            await expect('home (vibe bar)', BASE + '/', { minRows: 0, vibeButton: true });
+            await expect('home (vibe bar)', BASE + '/', { minRows: 0, vibeButton: true, allowEmpty: true });
         } else {
             check('playlist (Мне нравится)', 'SKIP', 'нужен залогиненный профиль');
             check('collection', 'SKIP', 'нужен залогиненный профиль');

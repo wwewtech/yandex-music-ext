@@ -39,6 +39,11 @@
 
 Файл сохраняется в папку «Загрузки» с именем `Артист — Название.mp3`.
 
+Включать воспроизведение не нужно: при наличии входа в Яндекс расширение само меняет
+cookie-сессию на OAuth-токен и получает полный трек. Без входа (или без Плюса) API
+отдаёт только 30-секундный фрагмент — тогда расширение сообщает об этом и не сохраняет
+обрезанный файл.
+
 ---
 
 ## Возможности
@@ -83,6 +88,12 @@ node scripts/test_background_harness.js   # обработчики фоново�
 node scripts/test_logic.js                # защита от превью + подпись get-mp3
 node scripts/test_mp3_tagging.js          # ID3v2.3: кадры, границы, целостность аудио
 node scripts/test_audio_integrity.js      # M4A: PCM бит-в-бит, offset'ы, ffmpeg
+```
+
+Проверка скачивания полного трека по cookie-сессии (нужен `Session_id` из залогиненного браузера):
+```bash
+node scripts/test_session_token.mjs --cookies cookies.json   # [{name,value}, ...]
+node scripts/test_session_token.mjs --session "<Session_id>"
 ```
 
 Регресс-проверка покрытия кнопок на живом сайте (нужен Edge/Chromium с расширением и `--remote-debugging-port=9223`):

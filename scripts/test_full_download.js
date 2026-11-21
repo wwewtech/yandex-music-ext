@@ -40,19 +40,26 @@ async function main() {
 
   const ev = async (e) => (await call('Runtime.evaluate', { expression: e, returnByValue: true })).result?.value;
 
-  const play = await ev(`(() => {
-    const b = document.querySelector('button[aria-label*="Воспроизведение"], button[aria-label*="Слушать"]');
-    if (!b) return 'no play button';
-    b.click(); return 'clicked play';
-  })()`);
-  console.log('play:', play);
-  // Ждём, пока трек окажется в плеере (аннотация ставится из inject.js).
-  let barId = null;
-  for (let i = 0; i < 20 && !barId; i++) {
-    await sleep(700);
-    barId = await ev(`(function(){ var b = document.querySelector('section[class*=PlayerBar]'); return b ? b.getAttribute('data-ym-track-id') : null; })()`);
+  // По умолчанию НЕ нажимаем Play: проверяем скачивание без воспроизведения
+  // (OAuth-токен из cookie-сессии). YM_PLAY=1 — принудительно включить.
+  const withPlay = process.env.YM_PLAY === '1';
+  if (withPlay) {
+    const play = await ev(`(() => {
+      const b = document.querySelector('button[aria-label*="Воспроизведение"], button[aria-label*="Слушать"]');
+      if (!b) return 'no play button';
+      b.click(); return 'clicked play';
+    })()`);
+    console.log('play:', play);
+    // Ждём, пока трек окажется в плеере (аннотация ставится из inject.js).
+    let barId = null;
+    for (let i = 0; i < 20 && !barId; i++) {
+      await sleep(700);
+      barId = await ev(`(function(){ var b = document.querySelector('section[class*=PlayerBar]'); return b ? b.getAttribute('data-ym-track-id') : null; })()`);
+    }
+    console.log('player track:', barId || 'НЕ ОПРЕДЕЛЁН');
+  } else {
+    console.log('play: не нажимаем (проверяем скачивание без воспроизведения)');
   }
-  console.log('player track:', barId || 'НЕ ОПРЕДЕЛЁН');
 
   // 2. Клик по кнопке в изолированном мире расширения: btn.onclick живёт там,
   //    из MAIN-мира (обычный Runtime.evaluate) его не видно.
@@ -92,25 +99,31 @@ async function main() {
   else if (head[4] === 0x66 && head[5] === 0x74 && head[6] === 0x79 && head[7] === 0x70) container = 'm4a(ftyp)';
   else if (head.subarray(0, 4).toString() === 'fLaC') container = 'flac';
 
-  const text = buf.subarray(0, 200000).toString('latin1');
-  const hasTitle = text.toLowerCase().includes(TITLE.toLowerCase());
-  const hasTxxx = /TXXX|TIT2/.test(text);
+  // Название берём из самого файла: ожидание «в плеере именно этот трек»
+  // неверно (плейлист может переключить воспроизведение вперёд).
+  const fileBase = path.basename(file, path.extname(file));
+  const text = buf.subarray(0, 400000).toString('latin1');
+  const utf16 = buf.subarray(0, 400000).toString('utf16le');
+  const hasAnyTitle = /TIT2/.test(text);
+  const hasArtist = /TPE1/.test(text);
   const hasApic = /APIC/.test(text);
+  const seconds = Math.round(size * 8 / 320000);
 
   console.log(JSON.stringify({
-    file: path.basename(file),
+    file: fileBase,
     size,
-    seconds: Math.round(size * 8 / 320000),
+    seconds,
     headHex: hex,
     container,
-    hasExpectedTitle: hasTitle,
-    hasId3TitleFrame: hasTxxx,
+    hasId3TitleFrame: hasAnyTitle,
+    hasId3ArtistFrame: hasArtist,
     hasCoverFrame: hasApic
   }, null, 1));
-  console.log('logs:', logs.slice(-8).join('\n') || '(none)');
+  console.log('logs:', logs.filter((l) => /YM-DL|превью|Ошибка/.test(l)).slice(-6).join('\n') || '(none)');
 
-  const ok = size > 400000 && container === 'mp3(ID3)' && hasTitle && hasTxxx;
-  console.log(ok ? 'RESULT: OK' : 'RESULT: FAIL');
+  // Полный трек: не превью (~30с), есть теги и обложка.
+  const ok = size > 1_000_000 && seconds > 60 && container === 'mp3(ID3)' && hasAnyTitle && hasArtist;
+  console.log(ok ? 'RESULT: OK (полный трек с тегами)' : 'RESULT: FAIL');
   ws.close();
   process.exit(ok ? 0 : 1);
 }

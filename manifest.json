@@ -1,14 +1,15 @@
 {
   "manifest_version": 3,
   "name": "Yandex Music Downloader",
-  "version": "1.5.1",
+  "version": "1.6.0",
   "description": "Скачивание треков с Яндекс Музыки в максимальном качестве (FLAC/MP3/AAC) с тегами и обложками. Проверка обновлений через GitHub.",
   "permissions": [
     "downloads",
     "storage",
     "activeTab",
     "offscreen",
-    "alarms"
+    "alarms",
+    "cookies"
   ],
   "host_permissions": [
     "*://*.yandex.ru/*",

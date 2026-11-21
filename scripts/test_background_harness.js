@@ -32,6 +32,8 @@ function assert(cond, msg) {
         clearTimeout,
         importScripts: () => {}, // md5.js already evaluated into the context manually
         fetch: global.fetch,
+        Response: global.Response,
+        URLSearchParams: global.URLSearchParams,
         URL,
         TextEncoder,
         crypto: { subtle: nodeCrypto.webcrypto.subtle, getRandomValues: nodeCrypto.webcrypto.getRandomValues.bind(nodeCrypto.webcrypto) },
@@ -54,9 +56,13 @@ function assert(cond, msg) {
             storage: {
                 local: {
                     get(keys, cb) { cb({}); },
-                    set(obj, cb) { if (cb) cb(); }
+                    set(obj, cb) { if (cb) cb(); },
+                    remove(key, cb) { if (cb) cb(); }
                 }
             },
+            // Пусто = браузер без логина: обмен sessionid должен сдаться и
+            // цепочка обязана идти дальше по cookie-стратегиям.
+            cookies: { getAll: async () => [] },
             downloads: { download(opts, cb) { cb(1); } },
             offscreen: {
                 hasDocument: async () => true,
@@ -120,6 +126,30 @@ function assert(cond, msg) {
     assert(!resp.info, 'no download info leaked for anonymous request');
     assert(gfiAttempts >= 1,
         `chain continued past preview-only to get-file-info (${gfiAttempts} attempts)`);
+
+    // ---- test 4b: с cookie сессии токен обязан запрашиваться ДО остальных
+    //      стратегий, и забираться с правильными параметрами. -----------------
+    let tokenCall = null;
+    sandbox.chrome.cookies.getAll = async () => [
+        { name: 'Session_id', value: 'fake-session' },
+        { name: 'yandex_login', value: 'unit' }
+    ];
+    sandbox.fetch = (url, init) => {
+        if (String(url).includes('oauth.yandex.ru/token')) {
+            tokenCall = { url: String(url), init };
+            return Promise.resolve(new Response(JSON.stringify({ access_token: 'unit-token', expires_in: 1000 }), {
+                status: 200, headers: { 'Content-Type': 'application/json' }
+            }));
+        }
+        return realFetch(url, init);
+    };
+
+    const token = await vm.runInContext('getToken({})', ctx);
+    assert(token === 'unit-token', `getToken() вернул токен из сессии (${token.slice(0, 12)})`);
+    assert(tokenCall && /grant_type=sessionid/.test(String(tokenCall.init.body)),
+        'обмен идёт с grant_type=sessionid');
+    assert(tokenCall && /Session_id=fake-session/.test(String(tokenCall.init.headers.Cookie)),
+        'cookie сессии отправлена в oauth');
 
     // ---- test 5: download_bytes -> offscreen makes blob URL, SW downloads --
     let makeBlobMsg = null;

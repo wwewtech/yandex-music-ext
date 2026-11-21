@@ -1822,7 +1822,12 @@ function injectBatchHeaderButton() {
 function openBatchDownloadModal() {
     if (document.getElementById('ym-ext-batch-modal')) return;
 
-    const trackRows = Array.from(document.querySelectorAll('[class*="CommonTrack_root"], [class*="TrackPlaylist_track"], [class*="d-track "], .d-track'));
+    // Коллекция и блоки «популярное» построены на карточках — строк
+    // CommonTrack там нет вовсе, поэтому учитываем обе формы.
+    const trackRows = Array.from(document.querySelectorAll(
+        '[class*="CommonTrack_root"], [class*="TrackPlaylist_track"], [class*="d-track "], .d-track, ' +
+        '[class*="HorizontalCardContainer_root"], [class*="EntityCard_root"]'
+    ));
     const trackItems = [];
 
     trackRows.forEach(row => {

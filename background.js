@@ -109,6 +109,13 @@ function extForContainer(container, codec) {
 
 async function getToken(request) {
     if (request && request.token) return String(request.token);
+
+    // Самый надёжный источник: обмен cookie-сессии на OAuth-токен. Даёт доступ
+    // к ПОЛНОМУ треку без воспроизведения (перехват токена из трафика требует
+    // запущенного плеера, а cookie есть всегда).
+    const exchanged = await getSessionToken();
+    if (exchanged) return exchanged;
+
     return new Promise((resolve) => {
         try {
             chrome.storage.local.get(['ymToken'], (items) => {
@@ -118,6 +125,97 @@ async function getToken(request) {
             resolve('');
         }
     });
+}
+
+/* ==========================================================================
+   OAuth-токен из cookie-сессии (grant_type=sessionid)
+   Яндекс отдаёт полный трек по /download-info только авторизованному запросу.
+   Веб-клиент авторизуется cookie, а API ждёт OAuth. Поэтому меняем cookie
+   сессии на токен через oauth.yandex.ru — это работает с обычным логином в
+   браузере и не требует запускать воспроизведение.
+   ========================================================================== */
+
+// Опубликованные shared-реквизиты клиента (как в Cassette/нативных клиентах).
+const OAUTH_CLIENT_ID = '23cabbbdc6cd418abb4b39c32c41195d';
+const OAUTH_CLIENT_SECRET = '53bc75238f0c4d08a118e51fe9203300';
+const OAUTH_TOKEN_URL = 'https://oauth.yandex.ru/token';
+const SESSION_TOKEN_KEY = 'ymSessionToken';
+let sessionTokenMemory = { token: '', at: 0 };
+
+function readSessionTokenFromStorage() {
+    return new Promise((resolve) => {
+        try {
+            chrome.storage.local.get([SESSION_TOKEN_KEY], (items) => {
+                const entry = items && items[SESSION_TOKEN_KEY];
+                resolve(entry && entry.token ? entry : null);
+            });
+        } catch (_) {
+            resolve(null);
+        }
+    });
+}
+
+function writeSessionTokenToStorage(token) {
+    sessionTokenMemory = { token, at: Date.now() };
+    try {
+        chrome.storage.local.set({ [SESSION_TOKEN_KEY]: { token, at: Date.now() } });
+    } catch (_) {}
+}
+
+/** Токен по cookie-сессии; кэш на 6 часов. '' если не удалось. */
+async function getSessionToken() {
+    const fresh = sessionTokenMemory.token && Date.now() - sessionTokenMemory.at < 6 * 60 * 60 * 1000;
+    if (fresh) return sessionTokenMemory.token;
+
+    const stored = await readSessionTokenFromStorage();
+    if (stored && Date.now() - stored.at < 6 * 60 * 60 * 1000) {
+        sessionTokenMemory = { token: stored.token, at: stored.at };
+        return stored.token;
+    }
+
+    const token = await exchangeSessionForToken();
+    if (token) writeSessionTokenToStorage(token);
+    return token;
+}
+
+/** POST /token с grant_type=sessionid и текущими cookie Яндекса. */
+async function exchangeSessionForToken() {
+    try {
+        const cookies = await chrome.cookies.getAll({ domain: 'yandex.ru' });
+        if (!cookies || !cookies.length) return '';
+        if (!cookies.some((c) => c.name === 'Session_id')) return ''; // не залогинен
+
+        const cookieHeader = cookies
+            .filter((c) => c.name === 'Session_id' || c.name === 'sessionid2' || c.name === 'yandex_login')
+            .map((c) => `${c.name}=${c.value}`)
+            .join('; ');
+
+        const body = new URLSearchParams({
+            grant_type: 'sessionid',
+            client_id: OAUTH_CLIENT_ID,
+            client_secret: OAUTH_CLIENT_SECRET,
+            host: 'oauth.yandex.ru'
+        });
+
+        const res = await fetch(OAUTH_TOKEN_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Cookie': cookieHeader },
+            body
+        });
+        if (!res.ok) return '';
+        const json = await res.json();
+        return json && typeof json.access_token === 'string' ? json.access_token : '';
+    } catch (_) {
+        return '';
+    }
+}
+
+/** Сбрасывает кэш токена (при 401/403 от API). */
+async function dropSessionToken() {
+    sessionTokenMemory = { token: '', at: 0 };
+    try {
+        chrome.storage.local.remove(SESSION_TOKEN_KEY);
+    } catch (_) {}
 }
 
 function authedHeaders(token) {
@@ -524,7 +622,7 @@ async function downloadProcessedAudio(opts) {
  * Возвращает {info, attempts} при первой успехе, иначе бросает ошибку
  * с полным перечнем попыток.
  */
-async function resolveTrackDownloadStrategies(trackId, signedUrl, token) {
+async function resolveTrackDownloadStrategies(trackId, signedUrl, token, sessionOauthToken) {
     const attempts = [];
 
     const tryStrategy = async (name, url, fn) => {
@@ -544,6 +642,9 @@ async function resolveTrackDownloadStrategies(trackId, signedUrl, token) {
     };
 
     const strategies = [
+        // 0. OAuth-токен из cookie-сессии: работает на публичных страницах и не
+        // требует запущенного воспроизведения. Первой — именно из-за этого.
+        { name: 'session-token-download-info', url: `https://api.music.yandex.net/tracks/${trackId}/download-info`, run: () => resolveViaDownloadInfoAuthedSingle(trackId, sessionOauthToken, '.net') },
         // 1. Подписанный URL, перехваченный из реального трафика страницы.
         { name: 'signed-page-url', url: signedUrl || null, run: () => signedUrl ? resolveViaSignedUrl(signedUrl) : Promise.reject(new Error('нет подписанного URL')) },
         // 2. V1 download-info на .net (авторизация через cookie сессии).
@@ -657,9 +758,12 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         (async () => {
             const trackId = String(request.trackId);
             const signedUrl = request.signedUrl || null;
+            // getToken() сам сначала берёт OAuth-токен из cookie-сессии, что
+            // даёт полный трек без воспроизведения.
             const token = await getToken(request);
 
-            const { info, attempts } = await resolveTrackDownloadStrategies(trackId, signedUrl, token);
+            const { info, attempts } = await resolveTrackDownloadStrategies(trackId, signedUrl, token, token);
+            if (!info) await dropSessionToken(); // возможно, токен протух
             sendResponse({ info, attempts });
         })()
             .catch(err => sendResponse({ error: err.message || String(err) }));
