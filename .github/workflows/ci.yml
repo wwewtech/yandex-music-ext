@@ -197,6 +197,8 @@ jobs:
             --disable-features=Translate \
             --disable-background-timer-throttling \
             --disable-renderer-backgrounding \
+            --disable-backgrounding-occluded-windows \
+            --disable-ipc-flooding-protection \
             "https://music.yandex.ru/" \
             >"$CHROME_LOG" 2>&1 &
           CHROME_PID=$!
@@ -216,7 +218,7 @@ jobs:
           # покажет rows=0 и провал будет выглядеть как поломка вёрстки.
           echo "Проверка загрузки расширения…"
           ext_ready=0
-          for _ in $(seq 1 30); do
+          for _ in $(seq 1 60); do
             if curl --fail --silent --max-time 2 \
               "http://127.0.0.1:${YM_CDP_PORT}/json/list" 2>/dev/null \
               | grep -q 'chrome-extension://'; then
