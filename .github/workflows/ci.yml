@@ -180,11 +180,9 @@ jobs:
           }
           trap cleanup EXIT
 
-          setsid xvfb-run -a "$CHROME" \
+          setsid dbus-run-session -- xvfb-run -a -n 99 "$CHROME" \
             --headless=new \
             --no-sandbox \
-            --disable-dev-shm-usage \
-            --disable-gpu \
             --disable-extensions-except="$EXTENSION_DIR" \
             --load-extension="$EXTENSION_DIR" \
             --remote-debugging-port="$YM_CDP_PORT" \
