@@ -248,15 +248,22 @@ jobs:
           fi
           echo "✓ Расширение загружено"
 
-          # Диагностика: что Яндекс отдаёт раннеру (датацентровый IP может
-          # получать заглушку/капчу вместо каталога).
+          # Диагностика: что Яндекс отдаёт раннеру. Датацентровый IP получает
+          # облегчённую страницу без треков, поэтому проверять поверхности
+          # в таком окружении бессмысленно — это НЕ поломка расширения.
           echo "=== Проверка доступности music.yandex.ru ===" >&2
           curl --silent --show-error --max-time 20 -o /tmp/yam.html \
             -w 'HTTP %{http_code}, %{size_download} bytes\n' \
             "https://music.yandex.ru/album/43177815" >&2 || true
           grep -o '<title>[^<]*</title>' /tmp/yam.html 2>/dev/null | head -1 >&2 || true
-          echo -n 'track roots in HTML: ' >&2
-          grep -c 'CommonTrack' /tmp/yam.html 2>/dev/null >&2 || true
+          track_roots="$(grep -o 'CommonTrack' /tmp/yam.html 2>/dev/null | wc -l | tr -d ' ')"
+          echo "track roots in HTML: ${track_roots:-0}" >&2
+
+          if [ "${track_roots:-0}" -eq 0 ]; then
+            echo "::notice title=Surface tests skipped::Яндекс не отдал каталог на этом IP (0 треков в HTML) — проверка поверхностей невозможна, это не поломка расширения. Запустите scripts/test_surfaces.js локально на залогиненном профиле."
+            echo "ИТОГ: поверхности не проверены — Яндекс отдал страницу без контента (датацентровый IP)."
+            exit 0
+          fi
 
           set +e
           timeout 420 node scripts/test_surfaces.js 2>&1 | tee "$LOG_FILE"
