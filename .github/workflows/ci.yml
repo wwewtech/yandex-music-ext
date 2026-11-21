@@ -185,7 +185,6 @@ jobs:
             --no-sandbox \
             --disable-gpu \
             --disable-dev-shm-usage \
-            --disable-extensions-except="$EXTENSION_DIR" \
             --load-extension="$EXTENSION_DIR" \
             --remote-debugging-port="$YM_CDP_PORT" \
             --user-data-dir="$PROFILE_DIR" \
