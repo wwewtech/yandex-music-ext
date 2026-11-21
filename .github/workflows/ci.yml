@@ -21,7 +21,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
 
       - name: Validate Manifest V3 Structure
         run: |
@@ -183,11 +183,13 @@ jobs:
           setsid xvfb-run -a "$CHROME" \
             --headless=new \
             --no-sandbox \
-            --autoplay-policy=no-user-gesture-required \
-            --remote-debugging-port="$YM_CDP_PORT" \
-            --user-data-dir="$PROFILE_DIR" \
+            --disable-dev-shm-usage \
+            --disable-gpu \
             --disable-extensions-except="$EXTENSION_DIR" \
             --load-extension="$EXTENSION_DIR" \
+            --remote-debugging-port="$YM_CDP_PORT" \
+            --user-data-dir="$PROFILE_DIR" \
+            --autoplay-policy=no-user-gesture-required \
             "https://music.yandex.ru/" \
             >"$CHROME_LOG" 2>&1 &
           CHROME_PID=$!
