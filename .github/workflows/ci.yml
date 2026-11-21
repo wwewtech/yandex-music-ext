@@ -141,6 +141,9 @@ jobs:
         id: setup-chrome
         uses: browser-actions/setup-chrome@v2
 
+      - name: Install xvfb
+        run: sudo apt-get update && sudo apt-get install -y xvfb
+
       - name: Run Surface Tests
         shell: bash
         env:
@@ -177,7 +180,7 @@ jobs:
           }
           trap cleanup EXIT
 
-          setsid "$CHROME" \
+          setsid xvfb-run -a "$CHROME" \
             --headless=new \
             --no-sandbox \
             --autoplay-policy=no-user-gesture-required \
@@ -199,6 +202,26 @@ jobs:
             cat "$CHROME_LOG" >&2
             exit 1
           fi
+
+          # Убеждаемся, что расширение реально загрузилось: иначе тест «честно»
+          # покажет rows=0 и провал будет выглядеть как поломка вёрстки.
+          echo "Проверка загрузки расширения…"
+          ext_ready=0
+          for _ in $(seq 1 30); do
+            if curl --fail --silent --max-time 2 \
+              "http://127.0.0.1:${YM_CDP_PORT}/json/list" 2>/dev/null \
+              | grep -q 'chrome-extension://'; then
+              ext_ready=1
+              break
+            fi
+            sleep 1
+          done
+          if [ "$ext_ready" -ne 1 ]; then
+            echo "Расширение не загрузилось в браузер (нет target'ов chrome-extension)" >&2
+            cat "$CHROME_LOG" >&2
+            exit 1
+          fi
+          echo "✓ Расширение загружено"
 
           set +e
           timeout 420 node scripts/test_surfaces.js 2>&1 | tee "$LOG_FILE"
