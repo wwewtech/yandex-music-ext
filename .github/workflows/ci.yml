@@ -188,6 +188,8 @@ jobs:
             --remote-debugging-port="$YM_CDP_PORT" \
             --user-data-dir="$PROFILE_DIR" \
             --autoplay-policy=no-user-gesture-required \
+            --enable-logging=stderr \
+            --v=1 \
             "https://music.yandex.ru/" \
             >"$CHROME_LOG" 2>&1 &
           CHROME_PID=$!
@@ -218,6 +220,7 @@ jobs:
           done
           if [ "$ext_ready" -ne 1 ]; then
             echo "Расширение не загрузилось в браузер (нет target'ов chrome-extension)" >&2
+            echo "=== CHROME_LOG ===" >&2
             cat "$CHROME_LOG" >&2
             exit 1
           fi
