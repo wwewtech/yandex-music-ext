@@ -248,6 +248,16 @@ jobs:
           fi
           echo "✓ Расширение загружено"
 
+          # Диагностика: что Яндекс отдаёт раннеру (датацентровый IP может
+          # получать заглушку/капчу вместо каталога).
+          echo "=== Проверка доступности music.yandex.ru ===" >&2
+          curl --silent --show-error --max-time 20 -o /tmp/yam.html \
+            -w 'HTTP %{http_code}, %{size_download} bytes\n' \
+            "https://music.yandex.ru/album/43177815" >&2 || true
+          grep -o '<title>[^<]*</title>' /tmp/yam.html 2>/dev/null | head -1 >&2 || true
+          echo -n 'track roots in HTML: ' >&2
+          grep -c 'CommonTrack' /tmp/yam.html 2>/dev/null >&2 || true
+
           set +e
           timeout 420 node scripts/test_surfaces.js 2>&1 | tee "$LOG_FILE"
           test_status=${PIPESTATUS[0]}
