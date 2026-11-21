@@ -229,6 +229,9 @@ jobs:
             echo "Расширение не загрузилось в браузер (нет target'ов chrome-extension)" >&2
             echo "=== CHROME_LOG ===" >&2
             cat "$CHROME_LOG" >&2
+            echo "=== JSON LIST ===" >&2
+            curl --fail --silent --max-time 5 \
+              "http://127.0.0.1:${YM_CDP_PORT}/json/list" 2>&1 >&2
             exit 1
           fi
           echo "✓ Расширение загружено"
