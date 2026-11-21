@@ -116,9 +116,12 @@ jobs:
         run: node scripts/test_audio_integrity.js
 
       # Требует залогиненной cookie-сессии; без секрета шаг пропускается.
+      # secrets недоступны напрямую в if: — поэтому читаем через env.
       - name: Session -> OAuth token -> full track
-        if: ${{ secrets.YM_SESSION_ID != '' }}
-        run: node scripts/test_session_token.mjs --session "${{ secrets.YM_SESSION_ID }}"
+        env:
+          YM_SESSION_ID: ${{ secrets.YM_SESSION_ID }}
+        if: env.YM_SESSION_ID != ''
+        run: node scripts/test_session_token.mjs --session "$YM_SESSION_ID"
 
   surfaces:
     name: Test Extension Surfaces
