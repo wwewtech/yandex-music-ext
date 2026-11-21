@@ -180,6 +180,12 @@ jobs:
           }
           trap cleanup EXIT
 
+          # Verify extension directory structure
+          echo "=== Extension directory structure ===" >&2
+          find "$EXTENSION_DIR" -type f | sort >&2
+          echo "=== Manifest.json ===" >&2
+          cat "$EXTENSION_DIR/manifest.json" >&2
+
           setsid dbus-run-session -- xvfb-run -a -n 99 "$CHROME" \
             --headless=new \
             --no-sandbox \
@@ -198,6 +204,11 @@ jobs:
             --disable-renderer-backgrounding \
             --disable-backgrounding-occluded-windows \
             --disable-ipc-flooding-protection \
+            --force-device-scale-factor=1 \
+            --no-first-run \
+            --no-default-browser-check \
+            --disable-default-apps \
+            --disable-popup-blocking \
             "https://music.yandex.ru/" \
             >"$CHROME_LOG" 2>&1 &
           CHROME_PID=$!
